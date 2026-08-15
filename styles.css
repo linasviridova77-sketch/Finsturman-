@@ -86,3 +86,7 @@ hr{border:0;border-top:1px solid var(--line);margin:16px 0}
 
 /* ФинШтурман 1.2 — источники средств */
 .source-note{font-size:12px;color:var(--muted);margin-top:5px}
+
+/* v1.3 persistence */
+.sync.offline{animation:pulseSync 1.4s infinite}
+@keyframes pulseSync{50%{opacity:.35}}

@@ -195,29 +195,69 @@ function migrate(d){
 }
 function totalDebtOf(d){ return d.debts.reduce((s,x)=>s+Number(x.balance||0),0); }
 function cacheKey(){ return user ? `fin_shturman_cache_${user.id}` : "fin_shturman_cache"; }
-function cacheState(){ localStorage.setItem(cacheKey(),JSON.stringify(state)); }
-function cachedState(){ try{return JSON.parse(localStorage.getItem(cacheKey())||"null")}catch{return null} }
+function nowIso(){ return new Date().toISOString(); }
+function cacheState(updatedAt=state._updated_at||nowIso()){
+  state._updated_at=updatedAt;
+  localStorage.setItem(cacheKey(),JSON.stringify({payload:state,updated_at:updatedAt}));
+}
+function cachedState(){
+  try{
+    const raw=JSON.parse(localStorage.getItem(cacheKey())||"null");
+    if(!raw)return null;
+    if(raw.payload)return raw;
+    return {payload:raw,updated_at:raw._updated_at||"1970-01-01T00:00:00.000Z"};
+  }catch{return null}
+}
 function toast(msg){ const t=$("#toast"); t.textContent=msg;t.classList.remove("hidden");setTimeout(()=>t.classList.add("hidden"),2400); }
-function setSync(ok=true){ $("#syncBadge")?.classList.toggle("offline",!ok); $("#syncBadge")?.setAttribute("title",ok?"Синхронизировано":"Локально / нет связи"); }
-
-async function saveState(){
-  cacheState();
-  if(!user || !navigator.onLine){setSync(false);return;}
-  const {error}=await supabase.from("finance_state").upsert({
-    user_id:user.id,payload:state,updated_at:new Date().toISOString()
-  },{onConflict:"user_id"});
-  setSync(!error);
-  if(error) console.error(error);
+function setSync(ok=true,text=""){
+  const b=$("#syncBadge"); if(!b)return;
+  b.classList.toggle("offline",!ok);
+  b.textContent=ok?"●":"●";
+  b.setAttribute("title",text||(ok?"Сохранено в облаке":"Не синхронизировано"));
+}
+async function saveState({silent=false}={}){
+  const updatedAt=nowIso();
+  state._updated_at=updatedAt;
+  cacheState(updatedAt);
+  if(!user || !navigator.onLine){setSync(false,"Сохранено только на устройстве");return {ok:false,local:true};}
+  try{
+    const {data,error}=await supabase.from("finance_state").upsert({
+      user_id:user.id,payload:state,updated_at:updatedAt
+    },{onConflict:"user_id"}).select("updated_at").single();
+    if(error)throw error;
+    const cloudTime=data?.updated_at||updatedAt;
+    state._updated_at=cloudTime; cacheState(cloudTime); setSync(true,"Сохранено в Supabase");
+    if(!silent) toast("Сохранено");
+    return {ok:true,updated_at:cloudTime};
+  }catch(error){
+    console.error("saveState",error); setSync(false,"Ошибка сохранения в Supabase");
+    if(!silent) toast("Не удалось сохранить в облако. Данные оставлены на устройстве.");
+    return {ok:false,error};
+  }
 }
 async function loadState(){
   const local=cachedState();
-  if(local) state=migrate(local);
-  if(!navigator.onLine){setSync(false);return;}
-  const {data,error}=await supabase.from("finance_state").select("payload").eq("user_id",user.id).maybeSingle();
-  if(error){console.error(error);setSync(false);return;}
-  if(data?.payload) state=migrate(data.payload);
-  else await saveState();
-  cacheState();setSync(true);
+  if(local?.payload) state=migrate(local.payload);
+  if(!user || !navigator.onLine){setSync(false,"Работаю с локальной копией");return;}
+  try{
+    const {data,error}=await supabase.from("finance_state").select("payload,updated_at").eq("user_id",user.id).maybeSingle();
+    if(error)throw error;
+    if(!data?.payload){
+      if(local?.payload) state=migrate(local.payload); else state=migrate(clone(DEFAULT));
+      await saveState({silent:true}); return;
+    }
+    const localTime=new Date(local?.updated_at||"1970-01-01").getTime();
+    const cloudTime=new Date(data.updated_at||data.payload?._updated_at||"1970-01-01").getTime();
+    if(local?.payload && localTime>cloudTime){
+      state=migrate(local.payload);
+      await saveState({silent:true});
+    }else{
+      state=migrate(data.payload); state._updated_at=data.updated_at||state._updated_at||nowIso(); cacheState(state._updated_at); setSync(true,"Загружено из Supabase");
+    }
+  }catch(error){
+    console.error("loadState",error); setSync(false,"Не удалось загрузить облако — использую устройство");
+    if(!local?.payload) state=migrate(clone(DEFAULT));
+  }
 }
 function addHistory(kind,amount,note,meta={}){
   state.history.push({id:id(),date:new Date().toISOString(),kind,amount:Number(amount||0),note,meta});
@@ -500,6 +540,7 @@ function renderToday(){
 
 function renderMoney(){
   $("#screen-money").innerHTML=`
+    <div class="card tip good"><b>💾 Автосохранение включено</b><div class="small muted">Изменения сохраняются на устройстве автоматически и синхронизируются с Supabase. Для уверенности можно также нажать «Сохранить сейчас».</div></div>
     <div class="section-title"><h2>Зарплата</h2></div>
     <div class="card form-grid">
       <label class="wide">Всего в месяц<input data-root="salary_total" type="number" value="${state.salary_total}"></label>
@@ -527,32 +568,49 @@ function renderMoney(){
     <div class="section-title"><h2>Долги</h2><button id="addDebt">＋</button></div>
     <div id="debtList">${state.debts.map(d=>debtHtml(d)).join("")}</div>
 
-    <button id="saveAllBtn" class="primary full" style="margin-top:16px">💾 Сохранить изменения</button>
+    <button id="saveAllBtn" class="primary full" style="margin-top:16px">💾 Сохранить сейчас</button>
     <div class="notice">Используй условные названия: «Карта 1», «Вклад», «Кредитка». Номера карт не нужны.</div>
   `;
 
-  $("#addCategory").onclick=()=>{state.categories.push({id:id(),name:"Новый расход",monthly:0,priority:"Обычно"});renderMoney();};
-  $("#addAccount").onclick=()=>{state.accounts.push({id:id(),name:"Новый счёт",type:"Карта",balance:0});renderMoney();};
-  $("#addDebt").onclick=()=>{state.debts.push({id:id(),name:"Новый долг",type:"Кредит",balance:0,apr:0,payment:0,due_day:25});renderMoney();};
-
-  $$("[data-delete-category]").forEach(b=>b.onclick=()=>{state.categories=state.categories.filter(x=>x.id!==b.dataset.deleteCategory);renderMoney();});
-  $$("[data-delete-account]").forEach(b=>b.onclick=()=>{state.accounts=state.accounts.filter(x=>x.id!==b.dataset.deleteAccount);renderMoney();});
-  $$("[data-delete-debt]").forEach(b=>b.onclick=()=>{state.debts=state.debts.filter(x=>x.id!==b.dataset.deleteDebt);renderMoney();});
-
-  $("#saveAllBtn").onclick=async()=>{
+  function harvestMoneyForm(){
     $$("[data-root]").forEach(el=>state[el.dataset.root]=Number(el.value||0));
     state.categories.forEach(c=>{
-      const base=`[data-cat-id="${c.id}"]`;c.name=$(`${base} [data-f="name"]`).value;c.monthly=Number($(`${base} [data-f="monthly"]`).value||0);c.priority=$(`${base} [data-f="priority"]`).value;
+      const base=`[data-cat-id="${c.id}"]`; const el=$(base); if(!el)return;
+      c.name=$(`${base} [data-f="name"]`).value;c.monthly=Number($(`${base} [data-f="monthly"]`).value||0);c.priority=$(`${base} [data-f="priority"]`).value;
     });
     state.accounts.forEach(a=>{
-      const base=`[data-account-id="${a.id}"]`;a.name=$(`${base} [data-f="name"]`).value;a.balance=Number($(`${base} [data-f="balance"]`).value||0);a.type=$(`${base} [data-f="type"]`).value;
+      const base=`[data-account-id="${a.id}"]`; const el=$(base); if(!el)return;
+      a.name=$(`${base} [data-f="name"]`).value;a.balance=Number($(`${base} [data-f="balance"]`).value||0);a.type=$(`${base} [data-f="type"]`).value;
     });
     state.debts.forEach(d=>{
-      const base=`[data-debt-id="${d.id}"]`;d.name=$(`${base} [data-f="name"]`).value;d.balance=Number($(`${base} [data-f="balance"]`).value||0);d.payment=Number($(`${base} [data-f="payment"]`).value||0);d.apr=Number($(`${base} [data-f="apr"]`).value||0);d.type=$(`${base} [data-f="type"]`).value;d.due_day=Number($(`${base} [data-f="due_day"]`).value||25);
+      const base=`[data-debt-id="${d.id}"]`; const el=$(base); if(!el)return;
+      d.name=$(`${base} [data-f="name"]`).value;d.balance=Number($(`${base} [data-f="balance"]`).value||0);d.payment=Number($(`${base} [data-f="payment"]`).value||0);d.apr=Number($(`${base} [data-f="apr"]`).value||0);d.type=$(`${base} [data-f="type"]`).value;d.due_day=Number($(`${base} [data-f="due_day"]`).value||25);
     });
-    state.start_debt=Math.max(state.start_debt,totalDebt(),1);
+    state.start_debt=Math.max(Number(state.start_debt||0),totalDebt(),1);
+  }
+  let autoSaveTimer=null;
+  function scheduleAutoSave(){
+    clearTimeout(autoSaveTimer); harvestMoneyForm(); cacheState(); setSync(false,"Ожидает синхронизации");
+    autoSaveTimer=setTimeout(async()=>{await saveState({silent:true}); renderToday();},700);
+  }
+  $("#screen-money").querySelectorAll("input,select").forEach(el=>{
+    el.addEventListener("input",scheduleAutoSave); el.addEventListener("change",scheduleAutoSave);
+  });
+
+  $("#addCategory").onclick=async()=>{harvestMoneyForm();state.categories.push({id:id(),name:"Новый расход",monthly:0,priority:"Обычно"});await saveState({silent:true});renderMoney();};
+  $("#addAccount").onclick=async()=>{harvestMoneyForm();state.accounts.push({id:id(),name:"Новый счёт",type:"Карта",balance:0});await saveState({silent:true});renderMoney();};
+  $("#addDebt").onclick=async()=>{harvestMoneyForm();state.debts.push({id:id(),name:"Новый долг",type:"Кредит",balance:0,apr:0,payment:0,due_day:25});await saveState({silent:true});renderMoney();};
+
+  $$("[data-delete-category]").forEach(b=>b.onclick=async()=>{harvestMoneyForm();state.categories=state.categories.filter(x=>x.id!==b.dataset.deleteCategory);await saveState({silent:true});renderMoney();renderToday();});
+  $$("[data-delete-account]").forEach(b=>b.onclick=async()=>{harvestMoneyForm();state.accounts=state.accounts.filter(x=>x.id!==b.dataset.deleteAccount);await saveState({silent:true});renderMoney();renderToday();});
+  $$("[data-delete-debt]").forEach(b=>b.onclick=async()=>{harvestMoneyForm();state.debts=state.debts.filter(x=>x.id!==b.dataset.deleteDebt);await saveState({silent:true});renderMoney();renderToday();});
+
+  $("#saveAllBtn").onclick=async()=>{
+    harvestMoneyForm();
     addHistory("Настройки обновлены",0,"Изменены доходы, расходы, счета или долги.");
-    await saveState();renderToday();renderHistory();toast("Сохранено");
+    const r=await saveState({silent:true});
+    renderToday();renderHistory();
+    toast(r.ok?"Сохранено в Supabase":"Сохранено на устройстве, но облачная синхронизация не удалась");
   };
 }
 function categoryHtml(c){return `<div class="item" data-cat-id="${c.id}">
@@ -642,6 +700,8 @@ $("#logoutBtn").onclick=async()=>{await supabase.auth.signOut();};
 $$(".nav-btn").forEach(b=>b.onclick=()=>showScreen(b.dataset.screen));
 window.addEventListener("online",async()=>{setSync(true);if(user)await saveState();});
 window.addEventListener("offline",()=>setSync(false));
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="hidden"&&user)saveState({silent:true});});
+window.addEventListener("pagehide",()=>{if(user){cacheState();saveState({silent:true});}});
 
 if("serviceWorker" in navigator) window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(console.error));
 init();
