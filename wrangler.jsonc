@@ -2,7 +2,7 @@
   "name": "finsturman",
   "compatibility_date": "2026-08-15",
   "assets": {
-    "directory": "./public",
+    "directory": ".",
     "not_found_handling": "single-page-application"
   }
 }
