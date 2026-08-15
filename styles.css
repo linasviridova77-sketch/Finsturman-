@@ -73,3 +73,16 @@ hr{border:0;border-top:1px solid var(--line);margin:16px 0}
   .form-grid,.item-grid{grid-template-columns:1fr}.form-grid .wide{grid-column:auto}
   .metric .v{font-size:20px}
 }
+
+
+/* ФинШтурман 1.1 */
+.safe-number{font-size:32px;font-weight:900;letter-spacing:-.03em;margin:5px 0}
+.budget-row{padding:11px 0;border-bottom:1px solid var(--line)}
+.budget-row:last-child{border-bottom:0}
+.mini-progress{height:7px;background:#0f1628;border-radius:999px;overflow:hidden;margin:7px 0 5px}
+.mini-progress>div{height:100%;background:linear-gradient(90deg,var(--green),var(--yellow))}
+.impulse-card{border-color:rgba(241,191,99,.35)}
+
+
+/* ФинШтурман 1.2 — источники средств */
+.source-note{font-size:12px;color:var(--muted);margin-top:5px}
