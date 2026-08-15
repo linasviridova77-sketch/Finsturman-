@@ -1,4 +1,4 @@
-# Секретов в проекте быть не должно.
-# Никогда не добавляйте service_role key.
 .DS_Store
 Thumbs.db
+node_modules/
+.wrangler/
