@@ -6,6 +6,7 @@
     "wrangler": "^4.0.0"
   },
   "scripts": {
+    "build": "mkdir -p dist/icons && cp index.html app.js styles.css config.js manifest.webmanifest sw.js dist/ && cp icon-180.png icon-192.png icon-512.png dist/icons/",
     "deploy": "wrangler deploy"
   }
 }
