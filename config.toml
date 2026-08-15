@@ -1,0 +1,7 @@
+[theme]
+base="dark"
+primaryColor="#6F9CFF"
+
+[client]
+toolbarMode="minimal"
+showErrorDetails="none"
