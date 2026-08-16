@@ -122,3 +122,39 @@ body{
 .sync-text{font-size:10px;color:var(--muted);max-width:62px;text-align:right}
 .bottom-nav{background:rgba(9,13,22,.93)}
 @media(max-width:520px){.strategy-options{grid-template-columns:1fr}.cashflow-grid{grid-template-columns:1fr 1fr}}
+
+
+/* ФинШтурман 1.5 — debt forecast */
+.forecast-card{border-color:rgba(115,215,177,.2)}
+.forecast-main{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
+.forecast-date{font-size:29px;font-weight:900;letter-spacing:-.04em;margin:5px 0;text-transform:capitalize}
+.forecast-pill{background:rgba(115,215,177,.1);border:1px solid rgba(115,215,177,.2);color:var(--green);padding:9px 11px;border-radius:999px;font-weight:800;font-size:12px;white-space:nowrap}
+.forecast-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px}
+.forecast-stats>div{padding:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:13px}
+.forecast-stats span{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+.forecast-details{margin-top:12px}
+.scenario-list{display:grid;gap:7px;margin-top:10px}
+.scenario{display:flex;justify-content:space-between;align-items:center;padding:10px;border:1px solid var(--line);border-radius:12px}
+.scenario.active{border-color:rgba(139,167,255,.5);background:rgba(139,167,255,.07)}
+.scenario-date{font-weight:800;text-transform:capitalize}
+.forecast-hero{font-size:25px;font-weight:900;margin-bottom:5px}
+@media(max-width:520px){
+  .forecast-main{display:grid}
+  .forecast-pill{width:max-content}
+}
+
+
+/* ФинШтурман 1.6 — grace period */
+.grace-card{border-left:4px solid var(--green)}
+.grace-card.warning{border-left-color:var(--yellow)}
+.grace-card.danger{border-left-color:var(--red)}
+.grace-days{font-weight:900;font-size:18px}
+.grace-amount{font-size:28px;font-weight:900;letter-spacing:-.04em;margin:9px 0 1px}
+.grace-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:12px}
+.grace-grid>div{background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.05);padding:9px;border-radius:12px}
+.grace-grid span{display:block;color:var(--muted);font-size:10px;margin-bottom:3px}
+.grace-grid b{font-size:13px}
+.grace-editor{background:rgba(139,167,255,.05);border:1px solid rgba(139,167,255,.12);border-radius:14px;padding:10px;margin-top:10px}
+.check-line{display:flex;gap:8px;align-items:center}
+.check-line input{width:auto}
+@media(max-width:520px){.grace-grid{grid-template-columns:1fr 1fr}}

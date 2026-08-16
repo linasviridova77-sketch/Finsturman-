@@ -40,7 +40,7 @@ const DEFAULT = {
   ],
   debts: [
     {id:"d1",name:"Единый кредит",type:"Кредит",balance:460000,apr:0,payment:16900,due_day:25},
-    {id:"d2",name:"Кредитка 1",type:"Кредитная карта",balance:90000,apr:0,payment:0,due_day:20}
+    {id:"d2",name:"Кредитка 1",type:"Кредитная карта",balance:90000,apr:0,payment:0,due_day:20,grace_enabled:true,grace_end:"2026-10-31",post_grace_apr:39.9}
   ],
   history: [],
   start_debt: 550000
@@ -61,6 +61,8 @@ function savings(){ return state.accounts.filter(x=>x.type==="Накоплени
 function monthlyLife(){ return state.categories.reduce((s,x)=>s+Number(x.monthly||0),0); }
 function mandatoryDebt(){ return state.debts.filter(x=>Number(x.balance)>0).reduce((s,x)=>s+Number(x.payment||0),0); }
 function priorityDebt(){
+  const grace=urgentGraceCard();
+  if(grace)return grace;
   const active=state.debts.filter(x=>Number(x.balance)>0);
   return active.sort((a,b)=>(Number(b.apr)-Number(a.apr)) || ((b.type==="Кредитная карта")-(a.type==="Кредитная карта")))[0]||null;
 }
@@ -187,6 +189,47 @@ function personalFunds(){
 function creditCardDebt(){
   return state.debts.filter(d=>d.type==="Кредитная карта").reduce((s,d)=>s+Number(d.balance||0),0);
 }
+function graceDeadline(debt){
+  if(!debt?.grace_enabled || !debt.grace_end)return null;
+  const d=new Date(`${debt.grace_end}T23:59:59`);
+  return Number.isNaN(d.getTime())?null:d;
+}
+function daysUntilDate(d){
+  if(!d)return null;
+  return Math.ceil((d.getTime()-Date.now())/86400000);
+}
+function salaryPaymentsUntil(deadline){
+  if(!deadline)return 0;
+  let count=0;
+  let cursor=new Date();
+  for(let i=0;i<24;i++){
+    const y=cursor.getFullYear(),m=cursor.getMonth();
+    for(const day of [Number(state.salary_day_1),Number(state.salary_day_2)]){
+      const maxDay=new Date(y,m+1,0).getDate();
+      const dt=new Date(y,m,Math.min(day,maxDay),12,0,0);
+      if(dt>Date.now() && dt<=deadline)count++;
+    }
+    cursor=new Date(y,m+1,1);
+    if(cursor>deadline)break;
+  }
+  return count;
+}
+function activeGraceCards(){
+  return state.debts.filter(d=>{
+    const dl=graceDeadline(d);
+    return d.type==="Кредитная карта" && Number(d.balance)>0 && dl && dl>Date.now();
+  }).sort((a,b)=>graceDeadline(a)-graceDeadline(b));
+}
+function graceReserveNeededPerPayment(debt){
+  const dl=graceDeadline(debt);
+  const n=Math.max(1,salaryPaymentsUntil(dl));
+  return Number(debt.balance||0)/n;
+}
+function urgentGraceCard(){
+  const cards=activeGraceCards();
+  return cards[0]||null;
+}
+
 function periodBuffer(){ return Math.max(0,Number(state.buffer_per_period||0)); }
 function strategyShare(){
   const mode=state.strategy_mode||"Сбалансированный";
@@ -202,7 +245,13 @@ function freeMoneyNow(){
 function migrate(d){
   const out={...clone(DEFAULT),...d};
   ["categories","accounts","debts","history"].forEach(k=>{ if(!Array.isArray(out[k])) out[k]=clone(DEFAULT[k]); });
-  out.categories.forEach(x=>x.id ||= id()); out.accounts.forEach(x=>x.id ||= id()); out.debts.forEach(x=>x.id ||= id());
+  out.categories.forEach(x=>x.id ||= id()); out.accounts.forEach(x=>x.id ||= id());
+  out.debts.forEach(x=>{
+    x.id ||= id();
+    if(x.grace_enabled===undefined)x.grace_enabled=false;
+    if(x.grace_end===undefined)x.grace_end="";
+    if(x.post_grace_apr===undefined)x.post_grace_apr=Number(x.apr||0);
+  });
   out.history.forEach(x=>x.id ||= id());
   out.start_debt=Math.max(Number(out.start_debt||0),totalDebtOf(out),1);
   out._updated_at=out._updated_at||"1970-01-01T00:00:00.000Z";
@@ -279,8 +328,163 @@ function addHistory(kind,amount,note,meta={}){
   state.history.push({id:id(),date:new Date().toISOString(),kind,amount:Number(amount||0),note,meta});
 }
 
+
+function addMonthsToDate(base,months){
+  const d=new Date(base);
+  d.setDate(1);
+  d.setMonth(d.getMonth()+months);
+  return d;
+}
+function strategyShareByName(mode){
+  if(mode==="Бережный")return 0.25;
+  if(mode==="Ускоренный")return 0.75;
+  return Math.max(0,Math.min(1,Number(state.extra_debt_share_balanced||50)/100));
+}
+function forecastDebtPayoff(mode=state.strategy_mode||"Сбалансированный"){
+  let debts=state.debts
+    .filter(d=>Number(d.balance||0)>0)
+    .map(d=>({
+      id:d.id,name:d.name,type:d.type,
+      balance:Number(d.balance||0),
+      apr:Number(d.apr||0),
+      payment:Number(d.payment||0),
+      grace_enabled:Boolean(d.grace_enabled),
+      grace_end:d.grace_end||"",
+      post_grace_apr:Number(d.post_grace_apr||0)
+    }));
+
+  if(!debts.length)return {ok:true,months:0,totalInterest:0,totalPaid:0,finish:new Date(),rows:[],warning:""};
+
+  const salary=Number(state.salary_total||0);
+  const life=monthlyLife();
+  const rollingBuffer=periodBuffer()*2;
+  let reserve=savings();
+  const reserveTarget=Number(state.reserve_target||0);
+  const share=strategyShareByName(mode);
+
+  let months=0,totalInterest=0,totalPaid=0;
+  const rows=[];
+  let warning="";
+  const hasMissingRates=debts.some(d=>{
+    if(d.type==="Кредитная карта" && d.grace_enabled)return Number(d.post_grace_apr||0)<=0;
+    return Number(d.apr||0)<=0;
+  });
+
+  while(debts.some(d=>d.balance>0.01) && months<360){
+    months++;
+
+    // Until the emergency fund reaches its target, reserve a modest 5k/month.
+    const reserveNeed=Math.max(0,reserveTarget-reserve);
+    const reserveContribution=Math.min(5000,reserveNeed);
+
+    // Mandatory payments are part of the amount available for debt, not an additional household expense.
+    const mandatory=debts.reduce((s,d)=>s+Math.min(d.balance,Math.max(0,d.payment)),0);
+
+    // Money left after ordinary life, planned reserve top-up and a rolling cash buffer.
+    const afterProtection=Math.max(0,salary-life-reserveContribution-rollingBuffer);
+
+    if(afterProtection+0.01 < mandatory){
+      return {
+        ok:false,
+        months:null,
+        totalInterest,
+        totalPaid,
+        finish:null,
+        rows,
+        warning:`При текущих вводных после жизни, подушки и резерва остаётся ${money(afterProtection)}, а минимальные платежи составляют ${money(mandatory)}. Сначала нужно скорректировать бюджет или платежи.`
+      };
+    }
+
+    const extraFree=Math.max(0,afterProtection-mandatory);
+    const extraBudget=extraFree*share;
+    let debtBudget=mandatory+extraBudget;
+
+    // Interest accrues first. Grace cards use 0% until their deadline,
+    // then switch to post-grace APR.
+    const simulatedDate=addMonthsToDate(new Date(),months-1);
+    debts.forEach(d=>{
+      if(d.balance<=0)return;
+      let effectiveApr=Math.max(0,Number(d.apr||0));
+      if(d.type==="Кредитная карта" && d.grace_enabled && d.grace_end){
+        const deadline=new Date(`${d.grace_end}T23:59:59`);
+        effectiveApr=simulatedDate<=deadline?0:Math.max(0,Number(d.post_grace_apr||0));
+      }
+      const monthlyRate=effectiveApr/100/12;
+      const interest=d.balance*monthlyRate;
+      d.balance+=interest;
+      totalInterest+=interest;
+    });
+
+    // Pay minimums.
+    let remainingBudget=debtBudget;
+    debts.forEach(d=>{
+      if(d.balance<=0||remainingBudget<=0)return;
+      const p=Math.min(d.balance,Math.max(0,d.payment),remainingBudget);
+      d.balance-=p;remainingBudget-=p;totalPaid+=p;
+    });
+
+    // Extra goes to highest APR; when rates are missing, credit cards go first.
+    const order=[...debts].sort((a,b)=>{
+      const simDate=addMonthsToDate(new Date(),months-1);
+      const aGrace=a.grace_enabled&&a.grace_end&&simDate<=new Date(`${a.grace_end}T23:59:59`);
+      const bGrace=b.grace_enabled&&b.grace_end&&simDate<=new Date(`${b.grace_end}T23:59:59`);
+      if(aGrace!==bGrace)return bGrace-aGrace;
+      if(aGrace&&bGrace)return new Date(a.grace_end)-new Date(b.grace_end);
+      const aApr=a.grace_enabled&&a.grace_end&&simDate>new Date(`${a.grace_end}T23:59:59`)?Number(a.post_grace_apr||0):Number(a.apr||0);
+      const bApr=b.grace_enabled&&b.grace_end&&simDate>new Date(`${b.grace_end}T23:59:59`)?Number(b.post_grace_apr||0):Number(b.apr||0);
+      const aprDiff=bApr-aApr;
+      if(Math.abs(aprDiff)>0.0001)return aprDiff;
+      if(a.type!==b.type)return b.type==="Кредитная карта"?1:-1;
+      return b.balance-a.balance;
+    });
+    for(const d of order){
+      if(remainingBudget<=0)break;
+      if(d.balance<=0)continue;
+      const p=Math.min(d.balance,remainingBudget);
+      d.balance-=p;remainingBudget-=p;totalPaid+=p;
+    }
+
+    reserve+=reserveContribution;
+
+    if(months===1 || months%6===0 || !debts.some(d=>d.balance>0.01)){
+      rows.push({
+        month:months,
+        debt:debts.reduce((s,d)=>s+Math.max(0,d.balance),0),
+        reserve
+      });
+    }
+  }
+
+  if(months>=360 && debts.some(d=>d.balance>0.01)){
+    return {ok:false,months:null,totalInterest,totalPaid,finish:null,rows,warning:"При текущем темпе долг не закрывается в пределах 30 лет. Проверь ставки, платежи и бюджет."};
+  }
+
+  if(hasMissingRates){
+    warning="У части долгов ставка не заполнена. Для них прогноз считает 0% и поэтому может показать слишком раннюю дату.";
+  }
+
+  return {
+    ok:true,
+    months,
+    totalInterest,
+    totalPaid,
+    finish:addMonthsToDate(new Date(),months),
+    rows,
+    warning
+  };
+}
+function humanMonths(months){
+  if(months===0)return "уже закрыты";
+  const y=Math.floor(months/12),m=months%12;
+  const parts=[];
+  if(y)parts.push(`${y} г.`);
+  if(m)parts.push(`${m} мес.`);
+  return parts.join(" ");
+}
+
 function standardPlan(incoming,partNo){
   const target=priorityDebt();
+  const grace=urgentGraceCard();
   const dueDebt=debtDueBeforeNextSalary();
   const lifeNeed=remainingLifeThisPeriod();
   const reserveGap=Math.max(0,Number(state.reserve_target||0)-savings());
@@ -293,6 +497,14 @@ function standardPlan(incoming,partNo){
 
   v=Math.min(rem,lifeNeed);
   if(v>0){a.push(["Оставить на жизнь до следующей выплаты",v]);rem-=v;}
+
+  if(grace && rem>0){
+    const graceQuota=Math.min(rem,graceReserveNeededPerPayment(grace),Number(grace.balance));
+    if(graceQuota>0){
+      a.push([`Погасить кредитку до ${new Date(grace.grace_end+"T00:00:00").toLocaleDateString("ru-RU")}`,graceQuota]);
+      rem-=graceQuota;
+    }
+  }
 
   v=Math.min(rem,bufferGoal);
   if(v>0){a.push(["Неприкосновенный остаток до выплаты",v]);rem-=v;}
@@ -307,7 +519,8 @@ function standardPlan(incoming,partNo){
   if(rem>0)a.push(["Оставить свободными",rem]);
 
   const mode=state.strategy_mode||"Сбалансированный";
-  return {alloc:a,target,reason:`Режим «${mode}»: сначала защищаю платежи, жизнь и неприкосновенный остаток ${money(bufferGoal)}. В долг уходит только часть действительно свободных денег.`};
+  const graceText=grace?` Отдельно резервирую сумму для кредитки «${grace.name}», чтобы успеть закрыть её до конца льготного периода.`:"";
+  return {alloc:a,target,reason:`Режим «${mode}»: сначала защищаю платежи, жизнь и обязательный резерв. В долг уходит только часть действительно свободных денег.${graceText}`};
 }
 function bonusPlan(incoming){
   const target=priorityDebt();
@@ -400,6 +613,28 @@ function renderToday(){
       ${pauses.slice(-3).map(h=>`<div class="small" style="margin-top:7px">${esc(h.note)} · ${money(h.amount)} · до ${new Date(h.meta.unlockAt).toLocaleString("ru-RU")}</div>`).join("")}
     </div>`:""}
 
+    ${activeGraceCards().map(card=>{
+      const dl=graceDeadline(card);
+      const days=daysUntilDate(dl);
+      const pays=Math.max(1,salaryPaymentsUntil(dl));
+      const per=graceReserveNeededPerPayment(card);
+      const level=days<=14?"danger":days<=45?"warning":"good";
+      return `<div class="card grace-card ${level}">
+        <div class="row"><div><div class="eyebrow">ЛЬГОТНЫЙ ПЕРИОД</div><b>${esc(card.name)}</b></div><div class="grace-days">${days} дн.</div></div>
+        <div class="grace-amount">${money(card.balance)}</div>
+        <div class="muted">0% до ${dl.toLocaleDateString("ru-RU")}</div>
+        <div class="grace-grid">
+          <div><span>Осталось выплат</span><b>${pays}</b></div>
+          <div><span>Нужно с каждой выплаты</span><b>${money(per)}</b></div>
+          <div><span>После льготы</span><b>${Number(card.post_grace_apr||0).toFixed(1)}%</b></div>
+        </div>
+        <div class="small muted" style="margin-top:9px">Пока эта сумма не зарезервирована, обычное досрочное погашение других кредитов не должно быть приоритетом.</div>
+      </div>`;
+    }).join("")}
+
+    <div class="section-title"><h2>🎯 Когда я выйду из долгов</h2></div>
+    <div class="card forecast-card" id="forecastCard"></div>
+
     <div class="section-title"><h2>🧾 Остатки по расходам</h2></div>
     <div class="card">${categoryCards || `<div class="muted">Добавь категории расходов в «Мои деньги».</div>`}</div>
 
@@ -466,6 +701,49 @@ function renderToday(){
       </div>
     </div>
   `;
+
+  const forecastModes=["Бережный","Сбалансированный","Ускоренный"];
+  const forecasts=forecastModes.map(mode=>({mode,...forecastDebtPayoff(mode)}));
+  const current=forecasts.find(x=>x.mode===(state.strategy_mode||"Сбалансированный"))||forecasts[1];
+  const fc=$("#forecastCard");
+  if(fc){
+    if(totalDebt()<=0){
+      fc.innerHTML=`<div class="forecast-hero">🎉 Долгов нет</div><div class="muted">Теперь этот же денежный поток можно перенаправлять в накопления и цели.</div>`;
+    }else if(!current.ok){
+      fc.innerHTML=`<div class="notice warning"><b>Пока не могу построить реалистичный прогноз</b><br>${esc(current.warning)}</div>`;
+    }else{
+      const debtBudgetNow=Math.max(0,Number(state.salary_total||0)-monthlyLife()-periodBuffer()*2);
+      fc.innerHTML=`
+        <div class="forecast-main">
+          <div>
+            <div class="eyebrow">ТЕКУЩИЙ РЕЖИМ · ${esc(current.mode.toUpperCase())}</div>
+            <div class="forecast-date">${current.finish.toLocaleDateString("ru-RU",{month:"long",year:"numeric"})}</div>
+            <div class="muted">ориентировочно через ${humanMonths(current.months)}</div>
+          </div>
+          <div class="forecast-pill">${money(totalDebt())} → 0 ₽</div>
+        </div>
+        <div class="forecast-stats">
+          <div><span>Зарплата</span><b>${money(state.salary_total)}</b></div>
+          <div><span>Жизнь / месяц</span><b>${money(monthlyLife())}</b></div>
+          <div><span>Резерв в расчёте</span><b>${money(periodBuffer()*2)}</b></div>
+          <div><span>Прогноз процентов</span><b>${money(current.totalInterest)}</b></div>
+        </div>
+        ${current.warning?`<div class="notice warning">${esc(current.warning)}</div>`:""}
+        <details class="forecast-details">
+          <summary>Сравнить три режима</summary>
+          <div class="scenario-list">
+            ${forecasts.map(f=>`
+              <div class="scenario ${f.mode===(state.strategy_mode||"Сбалансированный")?"active":""}">
+                <div><b>${esc(f.mode)}</b><div class="small muted">${f.ok?humanMonths(f.months):"нужно изменить бюджет"}</div></div>
+                <div class="scenario-date">${f.ok?f.finish.toLocaleDateString("ru-RU",{month:"short",year:"numeric"}):"—"}</div>
+              </div>`).join("")}
+          </div>
+          <div class="small muted" style="margin-top:10px">
+            Прогноз пересчитывается из текущих остатков долгов, ставок, зарплаты, расходов, подушки и выбранной стратегии. Это ориентир: фактические банковские проценты и даты списаний могут немного отличаться.
+          </div>
+        </details>`;
+    }
+  }
 
   $("#saveExpenseBtn").onclick=async()=>{
     const amount=Number($("#quickExpenseAmount").value||0);
@@ -622,6 +900,7 @@ function renderMoney(){
     <div id="accountList">${state.accounts.map(a=>accountHtml(a)).join("")}</div>
 
     <div class="section-title"><h2>Долги</h2><button id="addDebt">＋</button></div>
+    <div class="notice"><b>Для кредитки с 0% включи «Есть льготный период».</b> Укажи дату, до которой нужно закрыть долг, и ставку после окончания льготы. Тогда ФинШтурман будет считать дедлайн важнее текущих 0%.</div>
     <div id="debtList">${state.debts.map(d=>debtHtml(d)).join("")}</div>
 
     <button id="saveAllBtn" class="primary full" style="margin-top:16px">💾 Сохранить сейчас</button>
@@ -641,7 +920,18 @@ function renderMoney(){
     });
     state.debts.forEach(d=>{
       const base=`[data-debt-id="${d.id}"]`; const el=$(base); if(!el)return;
-      d.name=$(`${base} [data-f="name"]`).value;d.balance=Number($(`${base} [data-f="balance"]`).value||0);d.payment=Number($(`${base} [data-f="payment"]`).value||0);d.apr=Number($(`${base} [data-f="apr"]`).value||0);d.type=$(`${base} [data-f="type"]`).value;d.due_day=Number($(`${base} [data-f="due_day"]`).value||25);
+      d.name=$(`${base} [data-f="name"]`).value;
+      d.balance=Number($(`${base} [data-f="balance"]`).value||0);
+      d.payment=Number($(`${base} [data-f="payment"]`).value||0);
+      d.apr=Number($(`${base} [data-f="apr"]`).value||0);
+      d.type=$(`${base} [data-f="type"]`).value;
+      d.due_day=Number($(`${base} [data-f="due_day"]`).value||25);
+      const ge=$(`${base} [data-f="grace_enabled"]`);
+      const gd=$(`${base} [data-f="grace_end"]`);
+      const pa=$(`${base} [data-f="post_grace_apr"]`);
+      d.grace_enabled=ge?ge.checked:false;
+      d.grace_end=gd?gd.value:"";
+      d.post_grace_apr=pa?Number(pa.value||0):Number(d.apr||0);
     });
     state.start_debt=Math.max(Number(state.start_debt||0),totalDebt(),1);
   }
@@ -656,7 +946,7 @@ function renderMoney(){
 
   $("#addCategory").onclick=async()=>{harvestMoneyForm();state.categories.push({id:id(),name:"Новый расход",monthly:0,priority:"Обычно"});await saveState({silent:true});renderMoney();};
   $("#addAccount").onclick=async()=>{harvestMoneyForm();state.accounts.push({id:id(),name:"Новый счёт",type:"Карта",balance:0});await saveState({silent:true});renderMoney();};
-  $("#addDebt").onclick=async()=>{harvestMoneyForm();state.debts.push({id:id(),name:"Новый долг",type:"Кредит",balance:0,apr:0,payment:0,due_day:25});await saveState({silent:true});renderMoney();};
+  $("#addDebt").onclick=async()=>{harvestMoneyForm();state.debts.push({id:id(),name:"Новый долг",type:"Кредит",balance:0,apr:0,payment:0,due_day:25,grace_enabled:false,grace_end:"",post_grace_apr:0});await saveState({silent:true});renderMoney();};
 
   $$("[data-delete-category]").forEach(b=>b.onclick=async()=>{harvestMoneyForm();state.categories=state.categories.filter(x=>x.id!==b.dataset.deleteCategory);await saveState({silent:true});renderMoney();renderToday();});
   $$("[data-delete-account]").forEach(b=>b.onclick=async()=>{harvestMoneyForm();state.accounts=state.accounts.filter(x=>x.id!==b.dataset.deleteAccount);await saveState({silent:true});renderMoney();renderToday();});
@@ -681,8 +971,16 @@ function accountHtml(a){return `<div class="item" data-account-id="${a.id}">
 function debtHtml(d){return `<div class="item" data-debt-id="${d.id}">
   <label>Название<input data-f="name" value="${esc(d.name)}"></label>
   <div class="item-grid"><label>Остаток долга<input data-f="balance" type="number" value="${d.balance}"></label><label>Платёж / месяц<input data-f="payment" type="number" value="${d.payment}"></label></div>
-  <div class="item-grid"><label>Ставка, %<input data-f="apr" type="number" step=".1" value="${d.apr}"></label><label>День платежа<input data-f="due_day" type="number" min="1" max="31" value="${d.due_day}"></label></div>
+  <div class="item-grid"><label>Ставка сейчас, %<input data-f="apr" type="number" step=".1" value="${d.apr}"></label><label>День платежа<input data-f="due_day" type="number" min="1" max="31" value="${d.due_day}"></label></div>
   <label>Тип<select data-f="type">${["Кредит","Кредитная карта"].map(x=>`<option ${x===d.type?"selected":""}>${x}</option>`).join("")}</select></label>
+  ${d.type==="Кредитная карта"?`
+    <div class="grace-editor">
+      <label class="check-line"><input data-f="grace_enabled" type="checkbox" ${d.grace_enabled?"checked":""}> Есть льготный период / 0%</label>
+      <div class="item-grid">
+        <label>0% до даты<input data-f="grace_end" type="date" value="${esc(d.grace_end||"")}"></label>
+        <label>Ставка после льготы, %<input data-f="post_grace_apr" type="number" step=".1" value="${Number(d.post_grace_apr||0)}"></label>
+      </div>
+    </div>`:""}
   <button class="danger full delete" data-delete-debt="${d.id}">Удалить</button></div>`;}
 
 function renderHistory(){
