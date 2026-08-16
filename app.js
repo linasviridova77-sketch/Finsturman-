@@ -39,7 +39,8 @@ const DEFAULT = {
     {id:"a2",name:"Вклад / подушка",type:"Накопления",balance:20000}
   ],
   debts: [
-    {id:"d1",name:"Единый кредит",type:"Кредит",balance:460000,apr:0,payment:16900,due_day:25},
+    {id:"d1",name:"Единый кредит",type:"Кредит",balance:460000,apr:0,payment:16900,due_day:25,
+      loan_start:"2026-08-15",first_payment_date:"2026-09-25",term_months:36,payment_type:"Аннуитетный",scheduled_end:"2029-08-25"},
     {id:"d2",name:"Кредитка 1",type:"Кредитная карта",balance:90000,apr:0,payment:0,due_day:20,grace_enabled:true,grace_end:"2026-10-31",post_grace_apr:39.9}
   ],
   history: [],
@@ -114,11 +115,67 @@ function remainingLifeThisPeriod(){
 function nextDebtDueDate(day){
   return nextOccurrence(day).date;
 }
+function parseDateOnly(s){
+  if(!s)return null;
+  const d=new Date(`${s}T12:00:00`);
+  return Number.isNaN(d.getTime())?null:d;
+}
+function nextScheduledPaymentDate(debt){
+  const first=parseDateOnly(debt.first_payment_date);
+  const now=new Date();
+  if(first && first>now)return first;
+  if(!debt.due_day)return null;
+  return nextOccurrence(debt.due_day).date;
+}
+function scheduledEndDate(debt){
+  const explicit=parseDateOnly(debt.scheduled_end);
+  if(explicit)return explicit;
+  const start=parseDateOnly(debt.loan_start);
+  if(start && Number(debt.term_months)>0){
+    const d=new Date(start);
+    d.setMonth(d.getMonth()+Number(debt.term_months));
+    return d;
+  }
+  return null;
+}
+function daysBetweenNow(d){
+  if(!d)return null;
+  return Math.ceil((d.getTime()-Date.now())/86400000);
+}
+function timelineEvents(){
+  const events=[];
+  const s1=nextOccurrence(state.salary_day_1);
+  const s2=nextOccurrence(state.salary_day_2);
+  events.push({date:s1.date,type:"income",title:"1-я часть зарплаты",amount:Number(state.salary_1||0)});
+  events.push({date:s2.date,type:"income",title:"2-я часть зарплаты",amount:Number(state.salary_2||0)});
+
+  state.debts.filter(d=>Number(d.balance)>0).forEach(d=>{
+    if(d.type==="Кредит"){
+      const pd=nextScheduledPaymentDate(d);
+      if(pd)events.push({date:pd,type:"debt",title:d.name,amount:Number(d.payment||0)});
+    }
+    if(d.type==="Кредитная карта"){
+      const dl=graceDeadline(d);
+      if(dl && dl>Date.now())events.push({date:dl,type:"grace",title:`${d.name} — конец 0%`,amount:Number(d.balance||0)});
+      const pd=nextScheduledPaymentDate(d);
+      if(pd && Number(d.payment||0)>0)events.push({date:pd,type:"debt",title:`${d.name} — мин. платёж`,amount:Number(d.payment||0)});
+    }
+  });
+  return events.sort((a,b)=>a.date-b.date).slice(0,6);
+}
+function scheduledPaymentsBefore(date){
+  if(!date)return 0;
+  return state.debts.filter(d=>Number(d.balance)>0).reduce((sum,d)=>{
+    const pd=nextScheduledPaymentDate(d);
+    return pd && pd<=date ? sum+Number(d.payment||0) : sum;
+  },0);
+}
+
 function debtDueBeforeNextSalary(){
   const n=nextSalary();
   return state.debts.filter(x=>Number(x.balance)>0).reduce((sum,x)=>{
-    const due=nextDebtDueDate(x.due_day);
-    return due<=n.date ? sum+Number(x.payment||0) : sum;
+    const pd=nextScheduledPaymentDate(x);
+    return pd && pd<=n.date ? sum+Number(x.payment||0) : sum;
   },0);
 }
 function safeDaily(){
@@ -251,6 +308,11 @@ function migrate(d){
     if(x.grace_enabled===undefined)x.grace_enabled=false;
     if(x.grace_end===undefined)x.grace_end="";
     if(x.post_grace_apr===undefined)x.post_grace_apr=Number(x.apr||0);
+    if(x.loan_start===undefined)x.loan_start="";
+    if(x.first_payment_date===undefined)x.first_payment_date="";
+    if(x.term_months===undefined)x.term_months=0;
+    if(x.payment_type===undefined)x.payment_type="Аннуитетный";
+    if(x.scheduled_end===undefined)x.scheduled_end="";
   });
   out.history.forEach(x=>x.id ||= id());
   out.start_debt=Math.max(Number(out.start_debt||0),totalDebtOf(out),1);
@@ -613,6 +675,19 @@ function renderToday(){
       ${pauses.slice(-3).map(h=>`<div class="small" style="margin-top:7px">${esc(h.note)} · ${money(h.amount)} · до ${new Date(h.meta.unlockAt).toLocaleString("ru-RU")}</div>`).join("")}
     </div>`:""}
 
+    <div class="section-title"><h2>📅 Что впереди</h2></div>
+    <div class="card timeline-card">
+      ${timelineEvents().map(ev=>{
+        const days=Math.max(0,daysBetweenNow(ev.date));
+        const icon=ev.type==="income"?"💰":ev.type==="grace"?"⏳":"💳";
+        return `<div class="timeline-row">
+          <div class="timeline-icon">${icon}</div>
+          <div class="timeline-body"><b>${esc(ev.title)}</b><div class="small muted">${ev.date.toLocaleDateString("ru-RU")} · через ${days} дн.</div></div>
+          <div class="timeline-amount">${money(ev.amount)}</div>
+        </div>`;
+      }).join("")}
+    </div>
+
     ${activeGraceCards().map(card=>{
       const dl=graceDeadline(card);
       const days=daysUntilDate(dl);
@@ -629,6 +704,21 @@ function renderToday(){
           <div><span>После льготы</span><b>${Number(card.post_grace_apr||0).toFixed(1)}%</b></div>
         </div>
         <div class="small muted" style="margin-top:9px">Пока эта сумма не зарезервирована, обычное досрочное погашение других кредитов не должно быть приоритетом.</div>
+      </div>`;
+    }).join("")}
+
+    ${state.debts.filter(d=>d.type==="Кредит"&&Number(d.balance)>0).map(d=>{
+      const next=nextScheduledPaymentDate(d);
+      const end=scheduledEndDate(d);
+      return `<div class="card loan-card">
+        <div class="eyebrow">ОСНОВНОЙ КРЕДИТ</div>
+        <div class="row"><b>${esc(d.name)}</b><b>${money(d.balance)}</b></div>
+        <div class="loan-grid">
+          <div><span>Следующий платёж</span><b>${next?next.toLocaleDateString("ru-RU"):"не указан"}</b></div>
+          <div><span>Через</span><b>${next?Math.max(0,daysBetweenNow(next))+" дн.":"—"}</b></div>
+          <div><span>Платёж</span><b>${money(d.payment)}</b></div>
+          <div><span>По графику до</span><b>${end?end.toLocaleDateString("ru-RU",{month:"short",year:"numeric"}):"не указано"}</b></div>
+        </div>
       </div>`;
     }).join("")}
 
@@ -728,6 +818,17 @@ function renderToday(){
           <div><span>Резерв в расчёте</span><b>${money(periodBuffer()*2)}</b></div>
           <div><span>Прогноз процентов</span><b>${money(current.totalInterest)}</b></div>
         </div>
+        ${(()=>{
+          const loan=state.debts.find(d=>d.type==="Кредит"&&Number(d.balance)>0);
+          if(!loan)return "";
+          const end=scheduledEndDate(loan);
+          if(!end)return "";
+          const diff=Math.round((end-current.finish)/(30.44*86400000));
+          return `<div class="notice"><b>Сравнение с графиком банка</b><br>
+            По текущему графику «${esc(loan.name)}» заканчивается примерно ${end.toLocaleDateString("ru-RU",{month:"long",year:"numeric"})}.
+            ${diff>0?`При текущем финансовом плане все долги могут закрыться примерно на <b>${diff} мес. раньше</b>.`:diff<0?`Текущий общий план выходит примерно на <b>${Math.abs(diff)} мес. позже</b> графика этого кредита из-за других обязательств.`:"Расчёт примерно совпадает с графиком."}
+          </div>`;
+        })()}
         ${current.warning?`<div class="notice warning">${esc(current.warning)}</div>`:""}
         <details class="forecast-details">
           <summary>Сравнить три режима</summary>
@@ -900,7 +1001,7 @@ function renderMoney(){
     <div id="accountList">${state.accounts.map(a=>accountHtml(a)).join("")}</div>
 
     <div class="section-title"><h2>Долги</h2><button id="addDebt">＋</button></div>
-    <div class="notice"><b>Для кредитки с 0% включи «Есть льготный период».</b> Укажи дату, до которой нужно закрыть долг, и ставку после окончания льготы. Тогда ФинШтурман будет считать дедлайн важнее текущих 0%.</div>
+    <div class="notice"><b>Для точного календаря:</b> у обычного кредита укажи дату выдачи, первый платёж, срок и плановую дату окончания. Для кредитки с 0% — дату окончания льготы и ставку после неё.</div>
     <div id="debtList">${state.debts.map(d=>debtHtml(d)).join("")}</div>
 
     <button id="saveAllBtn" class="primary full" style="margin-top:16px">💾 Сохранить сейчас</button>
@@ -932,6 +1033,16 @@ function renderMoney(){
       d.grace_enabled=ge?ge.checked:false;
       d.grace_end=gd?gd.value:"";
       d.post_grace_apr=pa?Number(pa.value||0):Number(d.apr||0);
+      const ls=$(`${base} [data-f="loan_start"]`);
+      const fp=$(`${base} [data-f="first_payment_date"]`);
+      const tm=$(`${base} [data-f="term_months"]`);
+      const pt=$(`${base} [data-f="payment_type"]`);
+      const se=$(`${base} [data-f="scheduled_end"]`);
+      d.loan_start=ls?ls.value:"";
+      d.first_payment_date=fp?fp.value:"";
+      d.term_months=tm?Number(tm.value||0):0;
+      d.payment_type=pt?pt.value:"Аннуитетный";
+      d.scheduled_end=se?se.value:"";
     });
     state.start_debt=Math.max(Number(state.start_debt||0),totalDebt(),1);
   }
@@ -946,7 +1057,8 @@ function renderMoney(){
 
   $("#addCategory").onclick=async()=>{harvestMoneyForm();state.categories.push({id:id(),name:"Новый расход",monthly:0,priority:"Обычно"});await saveState({silent:true});renderMoney();};
   $("#addAccount").onclick=async()=>{harvestMoneyForm();state.accounts.push({id:id(),name:"Новый счёт",type:"Карта",balance:0});await saveState({silent:true});renderMoney();};
-  $("#addDebt").onclick=async()=>{harvestMoneyForm();state.debts.push({id:id(),name:"Новый долг",type:"Кредит",balance:0,apr:0,payment:0,due_day:25,grace_enabled:false,grace_end:"",post_grace_apr:0});await saveState({silent:true});renderMoney();};
+  $("#addDebt").onclick=async()=>{harvestMoneyForm();state.debts.push({id:id(),name:"Новый долг",type:"Кредит",balance:0,apr:0,payment:0,due_day:25,
+          grace_enabled:false,grace_end:"",post_grace_apr:0,loan_start:"",first_payment_date:"",term_months:0,payment_type:"Аннуитетный",scheduled_end:""});await saveState({silent:true});renderMoney();};
 
   $$("[data-delete-category]").forEach(b=>b.onclick=async()=>{harvestMoneyForm();state.categories=state.categories.filter(x=>x.id!==b.dataset.deleteCategory);await saveState({silent:true});renderMoney();renderToday();});
   $$("[data-delete-account]").forEach(b=>b.onclick=async()=>{harvestMoneyForm();state.accounts=state.accounts.filter(x=>x.id!==b.dataset.deleteAccount);await saveState({silent:true});renderMoney();renderToday();});
@@ -973,6 +1085,18 @@ function debtHtml(d){return `<div class="item" data-debt-id="${d.id}">
   <div class="item-grid"><label>Остаток долга<input data-f="balance" type="number" value="${d.balance}"></label><label>Платёж / месяц<input data-f="payment" type="number" value="${d.payment}"></label></div>
   <div class="item-grid"><label>Ставка сейчас, %<input data-f="apr" type="number" step=".1" value="${d.apr}"></label><label>День платежа<input data-f="due_day" type="number" min="1" max="31" value="${d.due_day}"></label></div>
   <label>Тип<select data-f="type">${["Кредит","Кредитная карта"].map(x=>`<option ${x===d.type?"selected":""}>${x}</option>`).join("")}</select></label>
+  ${d.type==="Кредит"?`
+    <div class="loan-editor">
+      <div class="item-grid">
+        <label>Дата выдачи<input data-f="loan_start" type="date" value="${esc(d.loan_start||"")}"></label>
+        <label>Первый платёж<input data-f="first_payment_date" type="date" value="${esc(d.first_payment_date||"")}"></label>
+      </div>
+      <div class="item-grid">
+        <label>Срок, мес.<input data-f="term_months" type="number" min="0" value="${Number(d.term_months||0)}"></label>
+        <label>Тип платежа<select data-f="payment_type">${["Аннуитетный","Дифференцированный"].map(x=>`<option ${x===d.payment_type?"selected":""}>${x}</option>`).join("")}</select></label>
+      </div>
+      <label>Плановая дата окончания<input data-f="scheduled_end" type="date" value="${esc(d.scheduled_end||"")}"></label>
+    </div>`:""}
   ${d.type==="Кредитная карта"?`
     <div class="grace-editor">
       <label class="check-line"><input data-f="grace_enabled" type="checkbox" ${d.grace_enabled?"checked":""}> Есть льготный период / 0%</label>

@@ -158,3 +158,19 @@ body{
 .check-line{display:flex;gap:8px;align-items:center}
 .check-line input{width:auto}
 @media(max-width:520px){.grace-grid{grid-template-columns:1fr 1fr}}
+
+
+/* ФинШтурман 1.7 — calendar + ordinary credit */
+.timeline-card{padding:6px 14px}
+.timeline-row{display:grid;grid-template-columns:34px 1fr auto;gap:10px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
+.timeline-row:last-child{border-bottom:0}
+.timeline-icon{width:30px;height:30px;border-radius:10px;background:rgba(139,167,255,.08);display:grid;place-items:center}
+.timeline-body b{font-size:13px}
+.timeline-amount{font-weight:800;font-size:13px;text-align:right}
+.loan-card{border-left:4px solid var(--accent)}
+.loan-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:12px}
+.loan-grid>div{background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.05);padding:9px;border-radius:12px}
+.loan-grid span{display:block;color:var(--muted);font-size:10px;margin-bottom:3px}
+.loan-grid b{font-size:13px}
+.loan-editor{background:rgba(115,215,177,.04);border:1px solid rgba(115,215,177,.1);border-radius:14px;padding:10px;margin-top:10px}
+@media(max-width:520px){.timeline-row{grid-template-columns:30px 1fr auto}.loan-grid{grid-template-columns:1fr 1fr}}
