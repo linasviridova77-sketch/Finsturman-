@@ -19,10 +19,13 @@ const DEFAULT = {
   salary_day_1: 10,
   salary_day_2: 25,
   reserve_target: 50000,
-  bonus_debt_pct: 70,
-  bonus_reserve_pct: 20,
-  bonus_self_pct: 10,
+  bonus_debt_pct: 50,
+  bonus_reserve_pct: 30,
+  bonus_self_pct: 20,
   impulse_pause_hours: 72,
+  strategy_mode: "Сбалансированный",
+  buffer_per_period: 5000,
+  extra_debt_share_balanced: 50,
   categories: [
     {id:"c1",name:"Еда и продукты",monthly:18000,priority:"Обязательно"},
     {id:"c2",name:"Машина / бензин",monthly:8000,priority:"Обязательно"},
@@ -184,6 +187,17 @@ function personalFunds(){
 function creditCardDebt(){
   return state.debts.filter(d=>d.type==="Кредитная карта").reduce((s,d)=>s+Number(d.balance||0),0);
 }
+function periodBuffer(){ return Math.max(0,Number(state.buffer_per_period||0)); }
+function strategyShare(){
+  const mode=state.strategy_mode||"Сбалансированный";
+  if(mode==="Бережный") return 0.25;
+  if(mode==="Ускоренный") return 0.75;
+  return Math.max(0,Math.min(1,Number(state.extra_debt_share_balanced||50)/100));
+}
+function freeMoneyNow(){
+  return Math.max(0,personalFunds()-remainingLifeThisPeriod()-debtDueBeforeNextSalary()-periodBuffer());
+}
+
 
 function migrate(d){
   const out={...clone(DEFAULT),...d};
@@ -191,6 +205,7 @@ function migrate(d){
   out.categories.forEach(x=>x.id ||= id()); out.accounts.forEach(x=>x.id ||= id()); out.debts.forEach(x=>x.id ||= id());
   out.history.forEach(x=>x.id ||= id());
   out.start_debt=Math.max(Number(out.start_debt||0),totalDebtOf(out),1);
+  out._updated_at=out._updated_at||"1970-01-01T00:00:00.000Z";
   return out;
 }
 function totalDebtOf(d){ return d.debts.reduce((s,x)=>s+Number(x.balance||0),0); }
@@ -214,6 +229,7 @@ function setSync(ok=true,text=""){
   b.classList.toggle("offline",!ok);
   b.textContent=ok?"●":"●";
   b.setAttribute("title",text||(ok?"Сохранено в облаке":"Не синхронизировано"));
+  const t=$("#syncText"); if(t)t.textContent=ok?"сохранено":"не синхр.";
 }
 async function saveState({silent=false}={}){
   const updatedAt=nowIso();
@@ -265,39 +281,44 @@ function addHistory(kind,amount,note,meta={}){
 
 function standardPlan(incoming,partNo){
   const target=priorityDebt();
-  const lifeNeed=remainingLifeThisPeriod();
   const dueDebt=debtDueBeforeNextSalary();
-  const reserveGap=Math.max(0,state.reserve_target-savings());
-  let rem=incoming; const a=[];
+  const lifeNeed=remainingLifeThisPeriod();
+  const reserveGap=Math.max(0,Number(state.reserve_target||0)-savings());
+  const bufferGoal=periodBuffer();
+  const reserveGoal=Math.min(reserveGap,partNo===1?3000:2000);
+  let rem=Number(incoming); const a=[];
 
   let v=Math.min(rem,dueDebt);
-  if(v>0){a.push(["Ближайшие обязательные платежи",v]);rem-=v;}
+  if(v>0){a.push(["Защитить ближайшие платежи",v]);rem-=v;}
 
   v=Math.min(rem,lifeNeed);
-  if(v>0){a.push(["На жизнь до следующей выплаты",v]);rem-=v;}
+  if(v>0){a.push(["Оставить на жизнь до следующей выплаты",v]);rem-=v;}
 
-  const reserveGoal=Math.min(rem,reserveGap,partNo===1?3000:2000);
-  if(reserveGoal>0){a.push(["В подушку",reserveGoal]);rem-=reserveGoal;}
+  v=Math.min(rem,bufferGoal);
+  if(v>0){a.push(["Неприкосновенный остаток до выплаты",v]);rem-=v;}
 
-  if(target&&rem>0){
-    v=Math.min(rem,target.balance);
-    a.push([`Досрочно → ${target.name}`,v]);
-    rem-=v;
+  v=Math.min(rem,reserveGoal);
+  if(v>0){a.push(["Пополнить подушку",v]);rem-=v;}
+
+  if(rem>0 && target){
+    const extra=Math.min(rem*strategyShare(),Number(target.balance));
+    if(extra>0){a.push([`Досрочно → ${target.name}`,extra]);rem-=extra;}
   }
-  if(rem>0)a.push(["Свободный остаток",rem]);
+  if(rem>0)a.push(["Оставить свободными",rem]);
 
-  return {
-    alloc:a,target,
-    reason:`Сначала я защищаю платежи, которые наступят до следующей зарплаты, и реальный остаток бюджета на жизнь (${money(lifeNeed)}). Только после этого предлагаю подушку и досрочное погашение.`
-  };
+  const mode=state.strategy_mode||"Сбалансированный";
+  return {alloc:a,target,reason:`Режим «${mode}»: сначала защищаю платежи, жизнь и неприкосновенный остаток ${money(bufferGoal)}. В долг уходит только часть действительно свободных денег.`};
 }
 function bonusPlan(incoming){
-  const target=priorityDebt(),sum=Math.max(state.bonus_debt_pct+state.bonus_reserve_pct+state.bonus_self_pct,1),a=[];
-  let d=incoming*state.bonus_debt_pct/sum,r=incoming*state.bonus_reserve_pct/sum,s=incoming*state.bonus_self_pct/sum;
-  if(target)a.push([`В долг → ${target.name}`,Math.min(d,target.balance)]);else r+=d;
-  if(r>0)a.push(["В подушку",r]);if(s>0)a.push(["Себе без чувства вины",s]);
-  const used=a.reduce((x,y)=>x+y[1],0);if(incoming-used>1)a.push(["Свободный остаток",incoming-used]);
-  return {alloc:a,target,reason:"Премия не становится новой постоянной зарплатой. Поэтому обычный бюджет автоматически не увеличивается."};
+  const target=priorityDebt();
+  let dp=Number(state.bonus_debt_pct||50),rp=Number(state.bonus_reserve_pct||30),sp=Number(state.bonus_self_pct||20);
+  const total=Math.max(dp+rp+sp,1); dp/=total;rp/=total;sp/=total;
+  const a=[]; let debtPart=incoming*dp,reservePart=incoming*rp,selfPart=incoming*sp;
+  if(target)a.push([`В долг → ${target.name}`,Math.min(debtPart,target.balance)]); else reservePart+=debtPart;
+  if(reservePart>0)a.push(["В подушку / накопления",reservePart]);
+  if(selfPart>0)a.push(["Оставить себе",selfPart]);
+  const used=a.reduce((s,x)=>s+x[1],0); if(incoming-used>1)a.push(["Свободный остаток",incoming-used]);
+  return {alloc:a,target,reason:"Премия не считается обычной зарплатой: её можно делить между долгом, накоплениями и собой."};
 }
 function vacationPlan(incoming,vacationBudget){
   const target=priorityDebt(),n=safeDaily();let rem=incoming,a=[];
@@ -350,10 +371,10 @@ function renderToday(){
 
   $("#screen-today").innerHTML=`
     <div class="grid2">
-      <div class="metric"><div class="k">Долги</div><div class="v">${money(debt)}</div></div>
-      <div class="metric"><div class="k">Мои деньги</div><div class="v">${money(cash)}</div></div>
-      <div class="metric"><div class="k">Свои средства</div><div class="v">${money(personalFunds())}</div></div>
-      <div class="metric"><div class="k">Долг по кредиткам</div><div class="v">${money(creditCardDebt())}</div></div>
+      <div class="metric metric-debt"><div class="k">Общий долг</div><div class="v">${money(debt)}</div></div>
+      <div class="metric"><div class="k">Кредитные карты</div><div class="v">${money(creditCardDebt())}</div></div>
+      <div class="metric metric-own"><div class="k">Свои деньги</div><div class="v">${money(personalFunds())}</div></div>
+      <div class="metric metric-free"><div class="k">Свободно сейчас</div><div class="v">${money(freeMoneyNow())}</div></div>
     </div>
 
     <div class="card">
@@ -362,11 +383,17 @@ function renderToday(){
       <div class="small muted">Было ${money(start)} → сейчас ${money(debt)}</div>
     </div>
 
-    <div class="card tip good">
-      <div class="eyebrow">БЕЗОПАСНЫЙ ОРИЕНТИР СЕГОДНЯ</div>
-      <div class="safe-number">${money(n.daily)}</div>
-      <div>До ${n.part.toLowerCase()} осталось ${n.days} дн. Из бюджета периода уже записано расходов: <b>${money(n.spent)}</b>.</div>
-      ${dueSoon>0?`<div class="small" style="margin-top:7px">Также до следующей выплаты нужно защитить платежи по долгам: <b>${money(dueSoon)}</b>.</div>`:""}
+    <div class="card cashflow-card">
+      <div class="eyebrow">ДО СЛЕДУЮЩЕЙ ВЫПЛАТЫ</div>
+      <div class="cashflow-big">${money(n.remaining)}</div>
+      <div class="muted">осталось на повседневную жизнь на ${n.days} дн.</div>
+      <div class="cashflow-grid">
+        <div><span>Средний ориентир</span><b>${money(n.daily)}/день</b></div>
+        <div><span>Уже потрачено</span><b>${money(n.spent)}</b></div>
+        <div><span>Платежи до выплаты</span><b>${money(dueSoon)}</b></div>
+        <div><span>Неприкосновенный остаток</span><b>${money(periodBuffer())}</b></div>
+      </div>
+      <div class="small muted" style="margin-top:10px">Дневная сумма — только ориентир. Главное — общий остаток до следующей выплаты.</div>
     </div>
 
     ${pauses.length?`<div class="card tip warn"><b>⏳ У тебя есть покупки на паузе: ${pauses.length}</b>
@@ -385,6 +412,14 @@ function renderToday(){
         <label class="wide">Комментарий<input id="quickExpenseNote" placeholder="Например: бензин"></label>
       </div>
       <button id="saveExpenseBtn" class="primary full">Записать расход</button>
+    </div>
+
+    <div class="section-title"><h2>🧭 Как распределять свободные деньги</h2></div>
+    <div class="card strategy-card">
+      <div class="strategy-options">
+        ${["Бережный","Сбалансированный","Ускоренный"].map(x=>`<button class="strategy-btn ${(state.strategy_mode||"Сбалансированный")===x?"active":""}" data-strategy="${x}">${x}</button>`).join("")}
+      </div>
+      <div id="strategyDescription" class="small muted"></div>
     </div>
 
     <div class="section-title"><h2>💰 Мне пришли деньги</h2></div>
@@ -446,6 +481,18 @@ function renderToday(){
     await saveState();renderToday();renderMoney();renderHistory();
     toast(applied.kind==="credit"?"Расход записан — долг по кредитке вырос":"Расход списан из своих средств");
   };
+
+  const strategyText={
+    "Бережный":"Около 25% действительно свободных денег — в досрочное погашение. Больше остаётся у тебя.",
+    "Сбалансированный":"Около 50% действительно свободных денег — в долг, остальное остаётся свободным.",
+    "Ускоренный":"До 75% действительно свободных денег — в долг, но жизнь, платежи и резерв всё равно защищены."
+  };
+  if($("#strategyDescription"))$("#strategyDescription").textContent=strategyText[state.strategy_mode||"Сбалансированный"];
+  $$("[data-strategy]").forEach(b=>b.onclick=async()=>{
+    state.strategy_mode=b.dataset.strategy;
+    await saveState({silent:true});
+    renderToday();renderMoney();
+  });
 
   $$("#screen-today [data-income]").forEach(b=>b.onclick=()=>{selectedIncomeType=b.dataset.income;renderToday();});
   const amount=$("#incomeAmount"),vac=$("#vacationBudget"),purpose=$("#otherPurpose"),box=$("#incomePlanBox");
@@ -550,6 +597,15 @@ function renderMoney(){
       <label>День 2-й выплаты<input data-root="salary_day_2" type="number" min="1" max="31" value="${state.salary_day_2}"></label>
     </div>
 
+    <div class="section-title"><h2>Моя стратегия</h2></div>
+    <div class="card form-grid">
+      <label class="wide">Режим<select data-root-text="strategy_mode">
+        ${["Бережный","Сбалансированный","Ускоренный"].map(x=>`<option ${x===(state.strategy_mode||"Сбалансированный")?"selected":""}>${x}</option>`).join("")}
+      </select></label>
+      <label class="wide">Неприкосновенный остаток до следующей выплаты<input data-root="buffer_per_period" type="number" min="0" step="500" value="${state.buffer_per_period||5000}"></label>
+      <label class="wide">В долг из свободных денег в сбалансированном режиме, %<input data-root="extra_debt_share_balanced" type="number" min="0" max="100" value="${state.extra_debt_share_balanced||50}"></label>
+    </div>
+
     <div class="section-title"><h2>Премия</h2></div>
     <div class="card form-grid">
       <label>В долг, %<input data-root="bonus_debt_pct" type="number" value="${state.bonus_debt_pct}"></label>
@@ -574,6 +630,7 @@ function renderMoney(){
 
   function harvestMoneyForm(){
     $$("[data-root]").forEach(el=>state[el.dataset.root]=Number(el.value||0));
+    $$("[data-root-text]").forEach(el=>state[el.dataset.rootText]=el.value);
     state.categories.forEach(c=>{
       const base=`[data-cat-id="${c.id}"]`; const el=$(base); if(!el)return;
       c.name=$(`${base} [data-f="name"]`).value;c.monthly=Number($(`${base} [data-f="monthly"]`).value||0);c.priority=$(`${base} [data-f="priority"]`).value;
