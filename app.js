@@ -800,91 +800,293 @@ function debtJourneyMarkup(){
 }
 
 
-function calendarDayEvents(day){
-  const now=new Date(), y=now.getFullYear(), m=now.getMonth();
+
+function calendarDayEvents(day, monthIndex=new Date().getMonth(), year=new Date().getFullYear()){
   const out=[];
 
-  if(Number(state.salary_day_1)===day) out.push({kind:"salary1",title:"1-я часть зарплаты",amount:Number(state.salary_part_1||0),type:"income"});
-  if(Number(state.salary_day_2)===day) out.push({kind:"salary2",title:"2-я часть зарплаты",amount:Number(state.salary_part_2||0),type:"income"});
+  if(monthIndex===new Date().getMonth() && year===new Date().getFullYear()){
+    if(Number(state.salary_day_1)===day) out.push({kind:"salary1",title:"1-я часть зарплаты",amount:Number(state.salary_part_1||0),type:"income"});
+    if(Number(state.salary_day_2)===day) out.push({kind:"salary2",title:"2-я часть зарплаты",amount:Number(state.salary_part_2||0),type:"income"});
 
-  fixedCategories().filter(c=>Number(c.due_day)===day).forEach(c=>{
-    out.push({kind:"bill",id:c.id,title:c.name,amount:Number(c.monthly||0),type:"bill"});
-  });
+    fixedCategories().filter(c=>Number(c.due_day)===day).forEach(c=>{
+      out.push({kind:"bill",id:c.id,title:c.name,amount:Number(c.monthly||0),type:"bill"});
+    });
 
-  state.debts.filter(d=>Number(d.balance)>0 && Number(d.due_day||0)===day).forEach(d=>{
-    out.push({kind:"debt",id:d.id,title:d.name,amount:Number(d.payment||d.min_payment||0),type:"debt"});
-  });
+    state.debts.filter(d=>Number(d.balance)>0 && Number(d.due_day||0)===day).forEach(d=>{
+      out.push({kind:"debt",id:d.id,title:d.name,amount:Number(d.payment||d.min_payment||0),type:"debt"});
+    });
+  }
 
   state.debts.filter(d=>Number(d.balance)>0&&d.grace_enabled&&d.grace_end).forEach(d=>{
     const gd=parseDateOnly(d.grace_end);
-    if(gd && gd.getFullYear()===y && gd.getMonth()===m && gd.getDate()===day){
+    if(gd && gd.getFullYear()===year && gd.getMonth()===monthIndex && gd.getDate()===day){
       out.push({kind:"grace",id:d.id,title:`Конец 0% — ${d.name}`,amount:Number(d.balance||0),type:"grace"});
     }
   });
+
   return out;
 }
-function openCalendarDay(day){
-  let modal=$("#calendarDayModal");
+
+function fullCalendarMonthMarkup(monthIndex,year,selectedDay){
+  const first=new Date(year,monthIndex,1);
+  const totalDays=new Date(year,monthIndex+1,0).getDate();
+  const monday=(first.getDay()+6)%7;
+  let cells="";
+  for(let i=0;i<monday;i++)cells+=`<span class="full-cal-empty"></span>`;
+
+  for(let day=1;day<=totalDays;day++){
+    const events=calendarDayEvents(day,monthIndex,year);
+    const dots=[...new Set(events.map(e=>e.type))]
+      .map(t=>`<i class="dot ${t}"></i>`).join("");
+    cells+=`<button type="button" class="full-cal-day ${day===selectedDay?"selected":""}" data-full-day="${day}">
+      <b>${day}</b>
+      <em>${dots}</em>
+    </button>`;
+  }
+
+  return `<div class="full-cal-week">
+      <i>Пн</i><i>Вт</i><i>Ср</i><i>Чт</i><i>Пт</i><i>Сб</i><i>Вс</i>
+    </div>
+    <div class="full-cal-grid">${cells}</div>`;
+}
+
+function calendarEditorRows(day,monthIndex,year){
+  const events=calendarDayEvents(day,monthIndex,year);
+  if(!events.length){
+    return `<div class="calendar-empty-state">
+      <b>На эту дату пока ничего нет</b>
+      <span>Можно добавить обязательный платёж ниже.</span>
+    </div>`;
+  }
+
+  return events.map(ev=>{
+    if(ev.kind==="salary1"||ev.kind==="salary2"){
+      const part=ev.kind==="salary1"?"1":"2";
+      return `<div class="calendar-edit-row" data-kind="${ev.kind}">
+        <span class="event-dot income"></span>
+        <div class="cal-edit-main">
+          <label>Событие<input value="${esc(ev.title)}" disabled></label>
+          <div class="cal-edit-grid">
+            <label>Сумма<input data-live-field="salary_amount" data-part="${part}" type="number" value="${Number(ev.amount||0)}"></label>
+            <label>День<input data-live-field="salary_day" data-part="${part}" type="number" min="1" max="31" value="${day}"></label>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    if(ev.kind==="bill"){
+      const c=state.categories.find(x=>x.id===ev.id);
+      return `<div class="calendar-edit-row" data-kind="bill" data-id="${ev.id}">
+        <span class="event-dot bill"></span>
+        <div class="cal-edit-main">
+          <label>Название<input data-live-field="bill_name" data-id="${ev.id}" value="${esc(c?.name||ev.title)}"></label>
+          <div class="cal-edit-grid">
+            <label>Сумма<input data-live-field="bill_amount" data-id="${ev.id}" type="number" value="${Number(c?.monthly||0)}"></label>
+            <label>Оплатить до<input data-live-field="bill_day" data-id="${ev.id}" type="number" min="1" max="31" value="${Number(c?.due_day||day)}"></label>
+          </div>
+          <button type="button" class="cal-delete" data-remove-bill="${ev.id}">Удалить платёж</button>
+        </div>
+      </div>`;
+    }
+
+    if(ev.kind==="debt"){
+      const d=state.debts.find(x=>x.id===ev.id);
+      return `<div class="calendar-edit-row" data-kind="debt" data-id="${ev.id}">
+        <span class="event-dot debt"></span>
+        <div class="cal-edit-main">
+          <label>Кредит<input value="${esc(d?.name||ev.title)}" disabled></label>
+          <div class="cal-edit-grid">
+            <label>Платёж<input data-live-field="debt_amount" data-id="${ev.id}" type="number" value="${Number(d?.payment||d?.min_payment||0)}"></label>
+            <label>День<input data-live-field="debt_day" data-id="${ev.id}" type="number" min="1" max="31" value="${Number(d?.due_day||day)}"></label>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    if(ev.kind==="grace"){
+      const d=state.debts.find(x=>x.id===ev.id);
+      return `<div class="calendar-edit-row" data-kind="grace" data-id="${ev.id}">
+        <span class="event-dot grace"></span>
+        <div class="cal-edit-main">
+          <label>Дедлайн<input value="${esc(ev.title)}" disabled></label>
+          <label>Дата окончания 0%<input data-live-field="grace_date" data-id="${ev.id}" type="date" value="${esc(d?.grace_end||"")}"></label>
+        </div>
+      </div>`;
+    }
+    return "";
+  }).join("");
+}
+
+function openFullCalendar(initialDay=new Date().getDate()){
+  let modal=$("#fullCalendarModal");
   if(!modal){
     modal=document.createElement("div");
-    modal.id="calendarDayModal";
-    modal.className="calendar-modal";
+    modal.id="fullCalendarModal";
+    modal.className="full-calendar-modal";
     document.body.appendChild(modal);
   }
-  const events=calendarDayEvents(day);
-  modal.innerHTML=`<div class="calendar-backdrop" data-close-cal></div>
-    <div class="calendar-sheet">
-      <div class="sheet-handle"></div>
-      <div class="row"><div><div class="eyebrow">КАЛЕНДАРЬ</div><h3>${day} ${new Date().toLocaleDateString("ru-RU",{month:"long"})}</h3></div><button class="sheet-close" data-close-cal>×</button></div>
-      <div class="calendar-event-list">
-        ${events.length?events.map(ev=>`<button class="calendar-event-edit" data-event-kind="${ev.kind}" data-event-id="${ev.id||""}">
-          <span class="event-dot ${ev.type}"></span>
-          <div><b>${esc(ev.title)}</b><small>Нажми, чтобы изменить</small></div>
-          <strong>${ev.type==="income"?"+":""}${money(ev.amount)}</strong>
-        </button>`).join(""):`<div class="empty-day">На эту дату событий пока нет.</div>`}
-      </div>
-      <button class="secondary full" id="addCalendarBillBtn">＋ Добавить обязательный платёж</button>
-    </div>`;
-  modal.classList.add("open");
 
-  $$("[data-close-cal]").forEach(x=>x.onclick=()=>modal.classList.remove("open"));
-  $("#addCalendarBillBtn").onclick=async()=>{
-    const name=prompt("Название платежа","Новый платёж"); if(!name)return;
-    const amount=Number(prompt("Сумма","0")||0);
-    state.categories.push({id:id(),name,monthly:amount,priority:"Обязательно",kind:"Обязательный платеж",due_day:Number(day)});
-    await saveState(); renderAll(); openCalendarDay(day);
+  const now=new Date();
+  const ctx={
+    month:now.getMonth(),
+    year:now.getFullYear(),
+    day:Math.min(initialDay,new Date(now.getFullYear(),now.getMonth()+1,0).getDate())
   };
-  $$(".calendar-event-edit").forEach(btn=>btn.onclick=()=>editCalendarEvent(btn.dataset.eventKind,btn.dataset.eventId,day));
-}
-async function editCalendarEvent(kind,eventId,day){
-  if(kind==="salary1"||kind==="salary2"){
-    const part=kind==="salary1"?"1":"2";
-    const amountKey=part==="1"?"salary_part_1":"salary_part_2";
-    const dayKey=part==="1"?"salary_day_1":"salary_day_2";
-    const amount=prompt(`Сумма ${part}-й части зарплаты`,Number(state[amountKey]||0));
-    if(amount===null)return;
-    const d=prompt("День месяца",Number(state[dayKey]||day));
-    if(d===null)return;
-    state[amountKey]=Number(amount||0); state[dayKey]=Number(d||day);
-  }else if(kind==="bill"){
-    const c=state.categories.find(x=>x.id===eventId); if(!c)return;
-    const amount=prompt(`Сумма «${c.name}»`,Number(c.monthly||0)); if(amount===null)return;
-    const d=prompt("Оплатить до числа",Number(c.due_day||day)); if(d===null)return;
-    c.monthly=Number(amount||0); c.due_day=Number(d||day); c.kind="Обязательный платеж";
-  }else if(kind==="debt"){
-    const dObj=state.debts.find(x=>x.id===eventId); if(!dObj)return;
-    const p=prompt(`Платёж по «${dObj.name}»`,Number(dObj.payment||dObj.min_payment||0)); if(p===null)return;
-    const dd=prompt("День платежа",Number(dObj.due_day||day)); if(dd===null)return;
-    if(dObj.type==="Кредит") dObj.payment=Number(p||0); else dObj.min_payment=Number(p||0);
-    dObj.due_day=Number(dd||day);
-  }else if(kind==="grace"){
-    const dObj=state.debts.find(x=>x.id===eventId); if(!dObj)return;
-    const date=prompt("Дата окончания 0% (ГГГГ-ММ-ДД)",dObj.grace_end||""); if(date===null)return;
-    dObj.grace_end=date;
+
+  function renderCalendarShell(){
+    const monthLabel=new Date(ctx.year,ctx.month,1).toLocaleDateString("ru-RU",{month:"long",year:"numeric"});
+    modal.innerHTML=`<div class="full-calendar-backdrop" data-close-full-cal></div>
+      <section class="full-calendar-sheet" aria-label="Календарь платежей">
+        <div class="sheet-handle"></div>
+
+        <div class="full-cal-header">
+          <div>
+            <div class="eyebrow">КАЛЕНДАРЬ ПЛАТЕЖЕЙ</div>
+            <h3>${monthLabel}</h3>
+          </div>
+          <button type="button" class="sheet-close" data-close-full-cal>×</button>
+        </div>
+
+        <div class="month-switch">
+          <button type="button" id="prevMonth">‹</button>
+          <button type="button" id="todayMonth">Сегодня</button>
+          <button type="button" id="nextMonth">›</button>
+        </div>
+
+        <div id="fullCalendarGrid">
+          ${fullCalendarMonthMarkup(ctx.month,ctx.year,ctx.day)}
+        </div>
+
+        <div class="full-cal-legend">
+          <span><i class="dot income"></i> зарплата</span>
+          <span><i class="dot bill"></i> обязательное</span>
+          <span><i class="dot debt"></i> кредит</span>
+          <span><i class="dot grace"></i> дедлайн 0%</span>
+        </div>
+
+        <div class="selected-day-head">
+          <div>
+            <span>Выбрано</span>
+            <b id="selectedCalendarDate"></b>
+          </div>
+          <button type="button" id="addBillOnSelected">＋ Платёж</button>
+        </div>
+
+        <div id="calendarLiveEditor"></div>
+        <div class="calendar-live-note">Изменения сохраняются сразу и сразу отражаются в календаре.</div>
+      </section>`;
+
+    modal.classList.add("open");
+
+    $$("[data-close-full-cal]").forEach(x=>x.onclick=()=>modal.classList.remove("open"));
+    $("#prevMonth").onclick=()=>{
+      ctx.month--; if(ctx.month<0){ctx.month=11;ctx.year--;}
+      ctx.day=1; renderCalendarShell();
+    };
+    $("#nextMonth").onclick=()=>{
+      ctx.month++; if(ctx.month>11){ctx.month=0;ctx.year++;}
+      ctx.day=1; renderCalendarShell();
+    };
+    $("#todayMonth").onclick=()=>{
+      const d=new Date();ctx.month=d.getMonth();ctx.year=d.getFullYear();ctx.day=d.getDate();renderCalendarShell();
+    };
+    $("#addBillOnSelected").onclick=async()=>{
+      const name=prompt("Название платежа","Новый платёж"); if(!name)return;
+      const amount=Number(prompt("Сумма","0")||0);
+      state.categories.push({
+        id:id(),name,monthly:amount,priority:"Обязательно",
+        kind:"Обязательный платеж",due_day:Number(ctx.day)
+      });
+      await saveState();
+      renderCalendarBody();
+      renderAll();
+      toast("Платёж добавлен");
+    };
+
+    renderCalendarBody();
   }
-  await saveState(); renderAll();
-  const modal=$("#calendarDayModal"); if(modal)modal.classList.remove("open");
-  toast("Изменения сохранены");
+
+  function renderCalendarBody(){
+    const grid=$("#fullCalendarGrid");
+    if(grid)grid.innerHTML=fullCalendarMonthMarkup(ctx.month,ctx.year,ctx.day);
+
+    const selected=$("#selectedCalendarDate");
+    if(selected)selected.textContent=new Date(ctx.year,ctx.month,ctx.day).toLocaleDateString("ru-RU",{day:"numeric",month:"long",year:"numeric"});
+
+    const editor=$("#calendarLiveEditor");
+    if(editor)editor.innerHTML=calendarEditorRows(ctx.day,ctx.month,ctx.year);
+
+    $$("[data-full-day]").forEach(btn=>btn.onclick=()=>{
+      ctx.day=Number(btn.dataset.fullDay);
+      renderCalendarBody();
+    });
+
+    $$("[data-live-field]").forEach(input=>{
+      const save=async()=>{
+        const field=input.dataset.liveField;
+        if(field==="salary_amount"){
+          const part=input.dataset.part;
+          state[part==="1"?"salary_part_1":"salary_part_2"]=Math.max(0,Number(input.value||0));
+        }else if(field==="salary_day"){
+          const part=input.dataset.part;
+          state[part==="1"?"salary_day_1":"salary_day_2"]=Math.min(31,Math.max(1,Number(input.value||1)));
+          ctx.day=Number(input.value||ctx.day);
+        }else if(field==="bill_name"){
+          const c=state.categories.find(x=>x.id===input.dataset.id); if(c)c.name=input.value.trim()||c.name;
+        }else if(field==="bill_amount"){
+          const c=state.categories.find(x=>x.id===input.dataset.id); if(c)c.monthly=Math.max(0,Number(input.value||0));
+        }else if(field==="bill_day"){
+          const c=state.categories.find(x=>x.id===input.dataset.id);
+          if(c){c.due_day=Math.min(31,Math.max(1,Number(input.value||1)));c.kind="Обязательный платеж";ctx.day=c.due_day;}
+        }else if(field==="debt_amount"){
+          const d=state.debts.find(x=>x.id===input.dataset.id);
+          if(d){
+            if(d.type==="Кредит")d.payment=Math.max(0,Number(input.value||0));
+            else d.min_payment=Math.max(0,Number(input.value||0));
+          }
+        }else if(field==="debt_day"){
+          const d=state.debts.find(x=>x.id===input.dataset.id);
+          if(d){d.due_day=Math.min(31,Math.max(1,Number(input.value||1)));ctx.day=d.due_day;}
+        }else if(field==="grace_date"){
+          const d=state.debts.find(x=>x.id===input.dataset.id);
+          if(d)d.grace_end=input.value;
+        }
+        await saveState();
+        renderAll();
+        renderCalendarBody();
+      };
+      input.addEventListener("change",save);
+    });
+
+    $$("[data-remove-bill]").forEach(btn=>btn.onclick=async()=>{
+      const c=state.categories.find(x=>x.id===btn.dataset.removeBill);
+      if(!c)return;
+      if(!confirm(`Удалить обязательный платёж «${c.name}»?`))return;
+      state.categories=state.categories.filter(x=>x.id!==c.id);
+      await saveState();renderAll();renderCalendarBody();toast("Платёж удалён");
+    });
+  }
+
+  renderCalendarShell();
+}
+
+
+function personalAccounts(){
+  return state.accounts.filter(a=>a.type!=="Накопления");
+}
+function savingsAccounts(){
+  return state.accounts.filter(a=>a.type==="Накопления");
+}
+function accountOptions(list){
+  return list.map(a=>`<option value="${a.id}">${esc(a.name)} · ${money(a.balance)}</option>`).join("");
+}
+function ensureSavingsAccount(){
+  let acc=savingsAccounts()[0];
+  if(!acc){
+    acc={id:id(),name:"Накопления",type:"Накопления",balance:0};
+    state.accounts.push(acc);
+  }
+  return acc;
 }
 
 function renderToday(){
@@ -916,7 +1118,7 @@ function renderToday(){
     </div>
 
     <div class="top-compact-grid">
-      <div class="card mini-calendar">${calendarMini()}</div>
+      <button type="button" class="card mini-calendar calendar-preview-btn" id="openFullCalendar">${calendarMini()}</button>
       ${debtJourneyMarkup()}
     </div>
 
@@ -947,7 +1149,48 @@ function renderToday(){
     <div class="section-title compact-title"><h2>Расходы и платежи</h2><span>было · оплачено · осталось</span></div>
     <div class="card progress-list">${monthCats}</div>
 
-    <details class="quick-entry card">
+    
+    <div class="section-title compact-title"><h2>Перемещение денег</h2><span>2 быстрых действия</span></div>
+    <div class="money-move-grid">
+      <details class="card money-action">
+        <summary>＋ Деньги пришли</summary>
+        <div class="money-action-form">
+          <label><span>Куда зачислить</span>
+            <select id="incomeAccount">${accountOptions(personalAccounts())}</select>
+          </label>
+          <label><span>Сумма</span>
+            <input id="incomeAmount" type="number" inputmode="decimal" placeholder="0 ₽">
+          </label>
+          <label><span>Что это</span>
+            <select id="incomeKind">
+              <option>Зарплата</option>
+              <option>Премия</option>
+              <option>Отпускные</option>
+              <option>Другой доход</option>
+            </select>
+          </label>
+          <button id="addIncomeBtn" class="primary full">Зачислить</button>
+        </div>
+      </details>
+
+      <details class="card money-action">
+        <summary>↗ Перевести в накопления</summary>
+        <div class="money-action-form">
+          <label><span>С какой карты / счёта</span>
+            <select id="transferFromAccount">${accountOptions(personalAccounts())}</select>
+          </label>
+          <label><span>Сумма</span>
+            <input id="transferToSavingsAmount" type="number" inputmode="decimal" placeholder="0 ₽">
+          </label>
+          <label><span>Куда</span>
+            <select id="transferSavingsAccount">${accountOptions(savingsAccounts().length?savingsAccounts():[ensureSavingsAccount()])}</select>
+          </label>
+          <button id="transferToSavingsBtn" class="secondary full">Перевести</button>
+        </div>
+      </details>
+    </div>
+
+<details class="quick-entry card">
       <summary>＋ Быстро добавить расход</summary>
       <div class="quick-form">
         <label class="quick-field"><span>Сумма</span><input id="quickExpenseAmount" type="number" inputmode="decimal" placeholder="0 ₽"></label>
@@ -971,9 +1214,61 @@ function renderToday(){
     </details>
   `;
 
-  $$("[data-cal-day]").forEach(btn=>btn.onclick=()=>openCalendarDay(Number(btn.dataset.calDay)));
+  const fullCalBtn=$("#openFullCalendar");
+  if(fullCalBtn)fullCalBtn.onclick=()=>openFullCalendar(new Date().getDate());
+  $$("[data-cal-day]").forEach(btn=>btn.onclick=(e)=>{e.stopPropagation();openFullCalendar(Number(btn.dataset.calDay));});
 
-  const saveBtn=$("#saveExpenseBtn");
+  
+  const addIncomeBtn=$("#addIncomeBtn");
+  if(addIncomeBtn)addIncomeBtn.onclick=async()=>{
+    const account=state.accounts.find(a=>a.id===$("#incomeAccount").value);
+    const amount=Math.max(0,Number($("#incomeAmount").value||0));
+    const kind=$("#incomeKind").value||"Доход";
+    if(!account)return toast("Выбери карту или счёт");
+    if(amount<=0)return toast("Введи сумму");
+    account.balance=Number(account.balance||0)+amount;
+    addHistory(kind,amount,`${kind} → ${account.name}`,{
+      sourceName:account.name,
+      sourceKind:"account",
+      accountId:account.id
+    });
+    $("#incomeAmount").value="";
+    await saveState();
+    renderAll();
+    toast(`${money(amount)} зачислено на «${account.name}»`);
+  };
+
+  const transferBtn=$("#transferToSavingsBtn");
+  if(transferBtn)transferBtn.onclick=async()=>{
+    const from=state.accounts.find(a=>a.id===$("#transferFromAccount").value);
+    let to=state.accounts.find(a=>a.id===$("#transferSavingsAccount").value);
+    const amount=Math.max(0,Number($("#transferToSavingsAmount").value||0));
+    if(!from)return toast("Выбери карту или счёт");
+    if(!to)to=ensureSavingsAccount();
+    if(amount<=0)return toast("Введи сумму");
+    if(Number(from.balance||0)<amount)return toast(`На «${from.name}» недостаточно денег`);
+    if(from.id===to.id)return toast("Выбери разные счета");
+
+    from.balance=Number(from.balance||0)-amount;
+    to.balance=Number(to.balance||0)+amount;
+
+    addHistory("Перевод в накопления",-amount,`${from.name} → ${to.name}`,{
+      sourceName:from.name,
+      targetName:to.name,
+      sourceKind:"account",
+      targetKind:"savings",
+      sourceAccountId:from.id,
+      targetAccountId:to.id,
+      transferAmount:amount
+    });
+
+    $("#transferToSavingsAmount").value="";
+    await saveState();
+    renderAll();
+    toast(`${money(amount)} переведено в «${to.name}»`);
+  };
+
+const saveBtn=$("#saveExpenseBtn");
   if(saveBtn)saveBtn.onclick=async()=>{
     const amount=Number($("#quickExpenseAmount").value||0);
     if(amount<=0)return toast("Введи сумму");

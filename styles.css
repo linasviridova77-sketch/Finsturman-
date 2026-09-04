@@ -300,3 +300,141 @@ body{
   .quick-form{grid-template-columns:1fr}
   .quick-save{grid-column:auto}
 }
+
+
+/* ===== v2.2 full live calendar ===== */
+.calendar-preview-btn{
+  width:100%;text-align:left;color:inherit;cursor:pointer;appearance:none;
+  border:1px solid var(--line)!important;
+}
+.calendar-preview-btn .cal-head span{color:#b495df}
+.calendar-preview-btn:active{transform:scale(.995)}
+
+.full-calendar-modal{
+  position:fixed;inset:0;z-index:10000;display:none;align-items:flex-end;justify-content:center
+}
+.full-calendar-modal.open{display:flex}
+.full-calendar-backdrop{
+  position:absolute;inset:0;background:rgba(0,0,0,.68);backdrop-filter:blur(4px)
+}
+.full-calendar-sheet{
+  position:relative;z-index:1;width:min(620px,100%);max-height:92vh;overflow:auto;
+  background:linear-gradient(180deg,#101820,#0b1117);border:1px solid var(--line);
+  border-radius:24px 24px 0 0;padding:10px 14px 24px;
+  box-shadow:0 -20px 60px rgba(0,0,0,.5)
+}
+.full-cal-header{display:flex;justify-content:space-between;gap:12px;align-items:center}
+.full-cal-header h3{margin:2px 0 0;text-transform:capitalize;font-size:20px}
+.month-switch{display:grid;grid-template-columns:44px 1fr 44px;gap:8px;margin:13px 0 10px}
+.month-switch button,.selected-day-head button{
+  min-height:40px;border-radius:11px;border:1px solid var(--line);background:#111a24;color:var(--text)
+}
+.full-cal-week,.full-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.full-cal-week i{text-align:center;font-style:normal;color:var(--muted);font-size:10px;padding:3px}
+.full-cal-empty{min-height:42px}
+.full-cal-day{
+  min-height:46px;border-radius:12px;border:1px solid transparent;background:transparent;
+  color:var(--text);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px
+}
+.full-cal-day b{font-size:12px}
+.full-cal-day em{display:flex;gap:3px;height:6px}
+.full-cal-day.selected{
+  background:rgba(161,92,255,.16);border-color:rgba(161,92,255,.45)
+}
+.full-cal-legend{display:flex;flex-wrap:wrap;gap:8px 12px;margin:10px 2px 14px;color:var(--muted);font-size:9px}
+.full-cal-legend span{display:inline-flex;align-items:center;gap:5px}
+.selected-day-head{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  border-top:1px solid var(--line);padding-top:13px;margin-top:2px
+}
+.selected-day-head span,.selected-day-head b{display:block}
+.selected-day-head span{font-size:9px;color:var(--muted)}
+.selected-day-head b{font-size:15px}
+.selected-day-head button{padding:0 12px;color:#c89cff}
+
+#calendarLiveEditor{display:grid;gap:8px;margin-top:10px}
+.calendar-edit-row{
+  display:grid;grid-template-columns:10px 1fr;gap:9px;align-items:start;
+  padding:12px;border:1px solid var(--line);border-radius:15px;background:#0d151d
+}
+.calendar-edit-row>.event-dot{margin-top:20px}
+.cal-edit-main{min-width:0}
+.cal-edit-main label{display:block;color:var(--muted);font-size:9px;margin-bottom:7px}
+.cal-edit-main input{
+  display:block;width:100%;margin-top:4px;min-height:38px;padding:8px 9px;
+  border-radius:10px;border:1px solid var(--line);background:#09121a;color:var(--text);
+  font-size:14px
+}
+.cal-edit-main input:disabled{opacity:.72}
+.cal-edit-grid{display:grid;grid-template-columns:1fr 92px;gap:8px}
+.cal-delete{
+  width:100%;min-height:36px;border-radius:10px;border:1px solid #4b2430;
+  background:transparent;color:#ff829b
+}
+.calendar-empty-state{
+  padding:18px;text-align:center;border:1px dashed var(--line);border-radius:14px;color:var(--muted)
+}
+.calendar-empty-state b,.calendar-empty-state span{display:block}
+.calendar-empty-state b{color:var(--text);margin-bottom:3px}
+.calendar-live-note{
+  margin-top:10px;padding:10px;border-radius:12px;background:rgba(97,211,154,.06);
+  border:1px solid rgba(97,211,154,.13);color:#91b9aa;font-size:9px
+}
+@media(max-width:420px){
+  .full-calendar-sheet{padding-left:10px;padding-right:10px}
+  .full-cal-week,.full-cal-grid{gap:3px}
+  .full-cal-day{min-height:42px}
+  .cal-edit-grid{grid-template-columns:1fr 78px}
+}
+
+
+/* ===== v2.3 incoming money + savings transfer ===== */
+.money-move-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+}
+.money-action{
+  min-width:0;
+  margin:0!important;
+}
+.money-action summary{
+  cursor:pointer;
+  font-weight:800;
+  font-size:11px;
+}
+.money-action-form{
+  display:grid;
+  gap:8px;
+  margin-top:11px;
+}
+.money-action-form label{
+  display:block;
+  min-width:0;
+}
+.money-action-form label span{
+  display:block;
+  margin:0 0 4px 2px;
+  color:var(--muted);
+  font-size:8px;
+}
+.money-action-form input,
+.money-action-form select{
+  width:100%;
+  min-width:0;
+  max-width:100%;
+  min-height:38px;
+  padding:8px 9px;
+  border-radius:10px;
+  border:1px solid var(--line);
+  background:#09121a;
+  color:var(--text);
+  font-size:14px;
+}
+.money-action-form button{
+  min-height:39px;
+  border-radius:10px;
+}
+@media(max-width:520px){
+  .money-move-grid{grid-template-columns:1fr}
+}
