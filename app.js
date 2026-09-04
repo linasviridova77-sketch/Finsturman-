@@ -1157,7 +1157,7 @@ function renderToday(){
     </div>
 
     <div class="top-compact-grid">
-      <button type="button" class="card mini-calendar calendar-preview-btn" id="openFullCalendar">${calendarMini()}</button>
+      <div class="card mini-calendar calendar-preview-btn" id="openFullCalendar" role="button" tabindex="0">${calendarMini()}</div>
       ${debtJourneyMarkup()}
     </div>
 
@@ -1254,7 +1254,12 @@ function renderToday(){
   `;
 
   const fullCalBtn=$("#openFullCalendar");
-  if(fullCalBtn)fullCalBtn.onclick=()=>openFullCalendar(new Date().getDate());
+  if(fullCalBtn){
+    fullCalBtn.onclick=()=>openFullCalendar(new Date().getDate());
+    fullCalBtn.onkeydown=(e)=>{
+      if(e.key==="Enter"||e.key===" "){e.preventDefault();openFullCalendar(new Date().getDate());}
+    };
+  }
   $$("[data-cal-day]").forEach(btn=>btn.onclick=(e)=>{e.stopPropagation();openFullCalendar(Number(btn.dataset.calDay));});
 
   

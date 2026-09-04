@@ -463,3 +463,159 @@ body{
     padding-top:6px;
   }
 }
+
+
+/* ===== v2.5 typography + calendar layout repair ===== */
+:root{
+  --app-font:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Segoe UI",Roboto,Arial,sans-serif;
+}
+html,body,button,input,select,textarea,summary,
+.app,.screen,.card,.mini-calendar,.journey-card,
+h1,h2,h3,h4,p,span,b,strong,small,label{
+  font-family:var(--app-font)!important;
+}
+button,input,select,textarea{font-variant-numeric:tabular-nums}
+
+/* The preview must be a normal card, not a button containing buttons. */
+.calendar-preview-btn{
+  display:block!important;
+  width:100%!important;
+  min-width:0!important;
+  text-align:left!important;
+  color:inherit!important;
+  cursor:pointer;
+  appearance:none;
+  overflow:hidden;
+}
+.mini-calendar .cal-head{
+  display:flex!important;
+  align-items:flex-start!important;
+  justify-content:space-between!important;
+  gap:8px!important;
+  margin-bottom:8px!important;
+}
+.mini-calendar .cal-head b{
+  font-size:16px!important;
+  line-height:1.1!important;
+  text-transform:capitalize;
+}
+.mini-calendar .cal-head span{
+  font-size:8px!important;
+  line-height:1.15!important;
+  text-align:right!important;
+  max-width:58px;
+}
+.mini-calendar .cal-week,
+.mini-calendar .cal-grid{
+  display:grid!important;
+  grid-template-columns:repeat(7,minmax(0,1fr))!important;
+  gap:3px!important;
+  width:100%!important;
+}
+.mini-calendar .cal-week{
+  margin-bottom:3px!important;
+}
+.mini-calendar .cal-week i{
+  display:block!important;
+  min-width:0!important;
+  padding:0!important;
+  margin:0!important;
+  text-align:center!important;
+  font-size:7px!important;
+  line-height:1!important;
+  font-style:normal!important;
+  color:var(--muted)!important;
+}
+.mini-calendar .cal-empty{
+  display:block!important;
+  min-width:0!important;
+  min-height:23px!important;
+}
+.mini-calendar .cal-day{
+  display:flex!important;
+  flex-direction:column!important;
+  align-items:center!important;
+  justify-content:center!important;
+  width:100%!important;
+  min-width:0!important;
+  min-height:23px!important;
+  height:23px!important;
+  padding:0!important;
+  margin:0!important;
+  border:0!important;
+  border-radius:7px!important;
+  background:transparent!important;
+  color:var(--text)!important;
+  font-family:var(--app-font)!important;
+  box-sizing:border-box!important;
+}
+.mini-calendar .cal-day b{
+  font-size:8px!important;
+  line-height:1!important;
+  font-weight:650!important;
+}
+.mini-calendar .cal-day em{
+  display:flex!important;
+  justify-content:center!important;
+  gap:2px!important;
+  height:4px!important;
+  margin-top:2px!important;
+}
+.mini-calendar .cal-day .dot{
+  width:3px!important;
+  height:3px!important;
+  min-width:3px!important;
+  border-radius:50%!important;
+}
+.mini-calendar .cal-day.today{
+  background:rgba(161,92,255,.24)!important;
+}
+.mini-calendar .cal-day:focus-visible{
+  outline:1px solid rgba(161,92,255,.65)!important;
+  outline-offset:1px!important;
+}
+
+/* Keep the two top cards aligned and stop the journey block from being pushed down. */
+.top-compact-grid{
+  display:grid!important;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;
+  gap:8px!important;
+  align-items:stretch!important;
+}
+.top-compact-grid>.card,
+.top-compact-grid>.journey-card{
+  min-width:0!important;
+  width:100%!important;
+  margin:0!important;
+  box-sizing:border-box!important;
+}
+.top-compact-grid .mini-calendar,
+.top-compact-grid .journey-card{
+  min-height:0!important;
+}
+
+/* Full calendar: keep seven real columns on iPhone. */
+.full-cal-week,.full-cal-grid{
+  grid-template-columns:repeat(7,minmax(0,1fr))!important;
+  width:100%!important;
+}
+.full-cal-day{
+  width:100%!important;
+  min-width:0!important;
+  box-sizing:border-box!important;
+}
+
+/* Consistent text sizing across cards. */
+.section-title h2{font-family:var(--app-font)!important;font-weight:750!important}
+.card summary{font-family:var(--app-font)!important;font-weight:700!important}
+.journey-title,.journey-copy,.journey-motivation{font-family:var(--app-font)!important}
+
+@media(max-width:380px){
+  .top-compact-grid{
+    grid-template-columns:1fr 1fr!important;
+    gap:6px!important;
+  }
+  .mini-calendar .cal-head b{font-size:14px!important}
+  .mini-calendar .cal-day{height:21px!important;min-height:21px!important}
+  .mini-calendar .cal-empty{min-height:21px!important}
+}
