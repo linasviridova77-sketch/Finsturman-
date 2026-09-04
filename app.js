@@ -302,7 +302,17 @@ function freeMoneyNow(){
 function migrate(d){
   const out={...clone(DEFAULT),...d};
   ["categories","accounts","debts","history"].forEach(k=>{ if(!Array.isArray(out[k])) out[k]=clone(DEFAULT[k]); });
-  out.categories.forEach(x=>x.id ||= id()); out.accounts.forEach(x=>x.id ||= id());
+  out.categories.forEach(x=>{
+    x.id ||= id();
+    const n=String(x.name||"").toLowerCase();
+    if(x.kind===undefined){
+      x.kind=(n.includes("интернет")||n.includes("связ")||n.includes("жкх")||n.includes("телефон"))?"Обязательный платеж":"Повседневные";
+    }
+    if(x.due_day===undefined){
+      x.due_day=n.includes("интернет")||n.includes("связ")?21:0;
+    }
+  });
+  out.accounts.forEach(x=>x.id ||= id());
   out.debts.forEach(x=>{
     x.id ||= id();
     if(x.grace_enabled===undefined)x.grace_enabled=false;
@@ -578,7 +588,10 @@ function standardPlan(incoming,partNo){
     const extra=Math.min(rem*strategyShare(),Number(target.balance));
     if(extra>0){a.push([`Досрочно → ${target.name}`,extra]);rem-=extra;}
   }
-  if(rem>0)a.push(["Оставить свободными",rem]);
+  if(rem>0){
+    if(totalDebt()<=0)a.push(["В накопления / цели",rem]);
+    else a.push(["Оставить свободными",rem]);
+  }
 
   const mode=state.strategy_mode||"Сбалансированный";
   const graceText=grace?` Отдельно резервирую сумму для кредитки «${grace.name}», чтобы успеть закрыть её до конца льготного периода.`:"";
@@ -624,344 +637,279 @@ function incomePlan(type,amount,vacation=0,purpose="Пока не знаю"){
   return otherPlan(amount,purpose);
 }
 
-function renderToday(){
-  const debt=totalDebt(),cash=totalMoney(),reserve=savings(),start=Math.max(state.start_debt,debt,1),progress=Math.max(0,Math.min(100,(1-debt/start)*100));
-  const n=safeDaily(),target=priorityDebt(),periodBudget=monthlyLife()/2;
-  const chips=["1-я часть зарплаты","2-я часть зарплаты","Премия","Отпускные","Другое"];
-  const defaultAmount=selectedIncomeType==="1-я часть зарплаты"?state.salary_1:selectedIncomeType==="2-я часть зарплаты"?state.salary_2:0;
-  const pauses=pendingPauses();
-  const dueSoon=debtDueBeforeNextSalary();
 
-  const categoryCards=state.categories.map(c=>{
-    const budget=Number(c.monthly||0)/2;
-    const spent=categorySpent(c.id);
-    const left=Math.max(0,budget-spent);
-    const pct=budget>0?Math.min(100,spent/budget*100):0;
-    return `<div class="budget-row">
-      <div class="row"><span>${esc(c.name)}</span><b>${money(left)}</b></div>
-      <div class="mini-progress"><div style="width:${pct}%"></div></div>
-      <div class="small muted">потрачено ${money(spent)} из ${money(budget)} до следующей выплаты</div>
+function monthStart(){
+  const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1,0,0,0);
+}
+function monthEnd(){
+  const d=new Date(); return new Date(d.getFullYear(),d.getMonth()+1,1,0,0,0);
+}
+function categorySpentMonth(categoryId){
+  const a=monthStart(),b=monthEnd();
+  return state.history.filter(h=>{
+    const d=new Date(h.date);
+    return d>=a && d<b && Number(h.amount)<0 &&
+      ["Покупка","Расход"].includes(h.kind) && h.meta?.categoryId===categoryId;
+  }).reduce((s,h)=>s+Math.abs(Number(h.amount||0)),0);
+}
+function fixedCategories(){
+  return state.categories.filter(c=>c.kind==="Обязательный платеж" || Number(c.due_day)>0);
+}
+function flexibleCategories(){
+  return state.categories.filter(c=>!(c.kind==="Обязательный платеж" || Number(c.due_day)>0));
+}
+function flexibleMonthlyBudget(){
+  return flexibleCategories().reduce((s,c)=>s+Number(c.monthly||0),0);
+}
+function nextCategoryDue(c){
+  if(!Number(c.due_day))return null;
+  return nextOccurrence(Number(c.due_day)).date;
+}
+function fixedBillsOpen(){
+  return fixedCategories().map(c=>{
+    const spent=categorySpentMonth(c.id);
+    const total=Number(c.monthly||0);
+    const left=Math.max(0,total-spent);
+    const due=nextCategoryDue(c);
+    return {c,total,spent,left,due,days:due?Math.max(0,daysBetweenNow(due)):999};
+  }).filter(x=>x.left>0).sort((a,b)=>a.days-b.days);
+}
+function smartTodayPlan(){
+  let available=personalFunds();
+  const rows=[];
+
+  for(const x of fixedBillsOpen()){
+    if(available<=0)break;
+    const reserve=Math.min(available,x.left);
+    rows.push({
+      icon:"◉",tone:"pink",
+      title:`Отложить на ${x.c.name}`,
+      detail:`Оплатить до ${x.due.toLocaleDateString("ru-RU",{day:"numeric",month:"long"})}`,
+      amount:reserve,
+      note:`осталось ${x.days} дн.`
+    });
+    available-=reserve;
+  }
+
+  const next=nextSalary();
+  const flexibleHalf=Math.max(0,flexibleMonthlyBudget()/2);
+  const spentFlex=state.history.filter(h=>{
+    const d=new Date(h.date);
+    return d>=currentPeriod().start && d<currentPeriod().end && Number(h.amount)<0 &&
+      ["Покупка","Расход"].includes(h.kind) &&
+      flexibleCategories().some(c=>c.id===h.meta?.categoryId);
+  }).reduce((s,h)=>s+Math.abs(Number(h.amount||0)),0);
+  const lifeNeed=Math.max(0,flexibleHalf-spentFlex);
+  if(lifeNeed>0 && available>0){
+    const v=Math.min(available,lifeNeed);
+    rows.push({icon:"◉",tone:"blue",title:"Оставить на жизнь",detail:`До следующей зарплаты · ${next.date.toLocaleDateString("ru-RU",{day:"numeric",month:"long"})}`,amount:v,note:`на ${next.days} дн.`});
+    available-=v;
+  }
+
+  const grace=urgentGraceCard();
+  if(grace && available>0){
+    const quota=Math.min(available,graceReserveNeededPerPayment(grace),Number(grace.balance));
+    if(quota>0){
+      rows.push({
+        icon:"◉",tone:"orange",
+        title:`Погасить ${grace.name}`,
+        detail:`0% до ${graceDeadline(grace).toLocaleDateString("ru-RU",{day:"numeric",month:"long"})}`,
+        amount:quota,note:"приоритет по дедлайну"
+      });
+      available-=quota;
+    }
+  }
+
+  // Do not reserve a normal loan if another salary arrives before its payment.
+  const loan=state.debts.filter(d=>d.type==="Кредит"&&Number(d.balance)>0)
+    .sort((a,b)=>nextScheduledPaymentDate(a)-nextScheduledPaymentDate(b))[0];
+  if(loan){
+    const pd=nextScheduledPaymentDate(loan);
+    const salaryBefore=pd && [nextOccurrence(state.salary_day_1),nextOccurrence(state.salary_day_2)]
+      .some(x=>x.date<pd);
+    if(!salaryBefore && pd && available>0){
+      const v=Math.min(available,Number(loan.payment||0));
+      if(v>0){
+        rows.push({icon:"◉",tone:"purple",title:`Отложить на ${loan.name}`,detail:`Платёж ${pd.toLocaleDateString("ru-RU",{day:"numeric",month:"long"})}`,amount:v,note:"обязательный платёж"});
+        available-=v;
+      }
+    }
+  }
+
+  if(totalDebt()<=0 && available>0){
+    rows.push({icon:"◉",tone:"green",title:"Перевести в накопления",detail:"Долги закрыты — теперь свободный поток работает на твою подушку и цели",amount:available,note:"следующий этап"});
+    available=0;
+  }else if(available>0){
+    rows.push({icon:"◉",tone:"gray",title:"Свободные деньги",detail:"Не нужно распределять всё сразу — можно оставить резервом",amount:available,note:"можно не трогать"});
+  }
+  return rows.slice(0,5);
+}
+function calendarMini(){
+  const now=new Date(), y=now.getFullYear(), m=now.getMonth();
+  const first=new Date(y,m,1);
+  const days=new Date(y,m+1,0).getDate();
+  const monday=(first.getDay()+6)%7;
+  const salaryDays=new Set([Number(state.salary_day_1),Number(state.salary_day_2)]);
+  const debtDays=new Set(state.debts.filter(d=>Number(d.balance)>0).map(d=>Number(d.due_day||0)));
+  const billDays=new Set(fixedCategories().map(c=>Number(c.due_day||0)));
+  const graceDays=new Set(state.debts.filter(d=>Number(d.balance)>0&&d.grace_enabled&&d.grace_end).map(d=>parseDateOnly(d.grace_end)).filter(d=>d&&d.getMonth()===m&&d.getFullYear()===y).map(d=>d.getDate()));
+  let cells="";
+  for(let i=0;i<monday;i++)cells+=`<span class="cal-empty"></span>`;
+  for(let d=1;d<=days;d++){
+    let dots="";
+    if(salaryDays.has(d))dots+=`<i class="dot income"></i>`;
+    if(billDays.has(d))dots+=`<i class="dot bill"></i>`;
+    if(debtDays.has(d))dots+=`<i class="dot debt"></i>`;
+    if(graceDays.has(d))dots+=`<i class="dot grace"></i>`;
+    cells+=`<span class="cal-day ${d===now.getDate()?"today":""}"><b>${d}</b><em>${dots}</em></span>`;
+  }
+  return `<div class="cal-head"><b>${now.toLocaleDateString("ru-RU",{month:"long",year:"numeric"})}</b><span>● зарплата &nbsp; ● платежи</span></div>
+  <div class="cal-week"><i>Пн</i><i>Вт</i><i>Ср</i><i>Чт</i><i>Пт</i><i>Сб</i><i>Вс</i></div>
+  <div class="cal-grid">${cells}</div>`;
+}
+function debtJourneyMarkup(){
+  const debt=totalDebt();
+  const start=Math.max(Number(state.start_debt||0),debt,1);
+  if(debt<=0){
+    const saved=savings(),target=Math.max(Number(state.reserve_target||0),1);
+    const p=Math.min(100,saved/target*100);
+    return `<div class="journey-card savings-phase">
+      <div class="eyebrow">НОВЫЙ ЭТАП</div>
+      <div class="journey-title">Долги закрыты ✓</div>
+      <div class="journey-start">Начинали с долга ${money(start)} — эта цифра остаётся в истории пути.</div>
+      <div class="journey-number">${money(saved)} <span>накоплено</span></div>
+      <div class="journey-bar"><i style="width:${p}%"></i></div>
+      <div class="row small"><span>Цель подушки</span><b>${money(state.reserve_target)}</b></div>
+      <div class="journey-next">Теперь свободные деньги направляются в накопления и цели.</div>
+    </div>`;
+  }
+  const paid=Math.max(0,start-debt),p=Math.max(0,Math.min(100,paid/start*100));
+  const f=forecastDebtPayoff(state.strategy_mode||"Сбалансированный");
+  return `<div class="journey-card">
+    <div class="eyebrow">МОЙ ПУТЬ К СВОБОДЕ</div>
+    <div class="journey-title">${money(start)} → 0 ₽</div>
+    <div class="journey-ring"><span>${p.toFixed(0)}%</span></div>
+    <div class="journey-copy">
+      <span>Было <b>${money(start)}</b></span>
+      <span>Погашено <b>${money(paid)}</b></span>
+      <span>Осталось <b>${money(debt)}</b></span>
+      <span>Прогноз <b>${f.ok?f.finish.toLocaleDateString("ru-RU",{month:"long",year:"numeric"}):"уточни данные"}</b></span>
+    </div>
+  </div>`;
+}
+
+function renderToday(){
+  const debt=totalDebt(), n=nextSalary(), actions=smartTodayPlan();
+  const activeDebts=state.debts.filter(d=>Number(d.balance)>0);
+  const monthCats=state.categories.map(c=>{
+    const total=Number(c.monthly||0),spent=categorySpentMonth(c.id),left=Math.max(0,total-spent);
+    const pct=total>0?Math.min(100,spent/total*100):0;
+    const due=Number(c.due_day)>0?nextCategoryDue(c):null;
+    return `<div class="progress-item">
+      <div class="progress-top"><div><b>${esc(c.name)}</b>${due?`<span>до ${due.toLocaleDateString("ru-RU",{day:"numeric",month:"short"})}</span>`:""}</div><b>${money(total)}</b></div>
+      <div class="progress-line"><i style="width:${pct}%"></i></div>
+      <div class="progress-bottom"><span>Было ${money(total)}</span><span>Оплачено / потрачено ${money(spent)}</span><b>Осталось ${money(left)}</b></div>
     </div>`;
   }).join("");
 
   $("#screen-today").innerHTML=`
-    <div class="grid2">
-      <div class="metric metric-debt"><div class="k">Общий долг</div><div class="v">${money(debt)}</div></div>
-      <div class="metric"><div class="k">Кредитные карты</div><div class="v">${money(creditCardDebt())}</div></div>
-      <div class="metric metric-own"><div class="k">Свои деньги</div><div class="v">${money(personalFunds())}</div></div>
-      <div class="metric metric-free"><div class="k">Свободно сейчас</div><div class="v">${money(freeMoneyNow())}</div></div>
-    </div>
-
-    <div class="card">
-      <div class="row"><b>Путь к нулевому долгу</b><b>${progress.toFixed(0)}%</b></div>
-      <div class="progress"><div style="width:${progress}%"></div></div>
-      <div class="small muted">Было ${money(start)} → сейчас ${money(debt)}</div>
-    </div>
-
-    <div class="card cashflow-card">
-      <div class="eyebrow">ДО СЛЕДУЮЩЕЙ ВЫПЛАТЫ</div>
-      <div class="cashflow-big">${money(n.remaining)}</div>
-      <div class="muted">осталось на повседневную жизнь на ${n.days} дн.</div>
-      <div class="cashflow-grid">
-        <div><span>Средний ориентир</span><b>${money(n.daily)}/день</b></div>
-        <div><span>Уже потрачено</span><b>${money(n.spent)}</b></div>
-        <div><span>Платежи до выплаты</span><b>${money(dueSoon)}</b></div>
-        <div><span>Неприкосновенный остаток</span><b>${money(periodBuffer())}</b></div>
+    <div class="today-hero">
+      <div>
+        <div class="eyebrow">ДОСТУПНО СЕЙЧАС</div>
+        <div class="hero-money">${money(personalFunds())}</div>
+        <div class="muted">на картах, наличными и своих счетах</div>
       </div>
-      <div class="small muted" style="margin-top:10px">Дневная сумма — только ориентир. Главное — общий остаток до следующей выплаты.</div>
-    </div>
-
-    ${pauses.length?`<div class="card tip warn"><b>⏳ У тебя есть покупки на паузе: ${pauses.length}</b>
-      ${pauses.slice(-3).map(h=>`<div class="small" style="margin-top:7px">${esc(h.note)} · ${money(h.amount)} · до ${new Date(h.meta.unlockAt).toLocaleString("ru-RU")}</div>`).join("")}
-    </div>`:""}
-
-    <div class="section-title"><h2>📅 Что впереди</h2></div>
-    <div class="card timeline-card">
-      ${timelineEvents().map(ev=>{
-        const days=Math.max(0,daysBetweenNow(ev.date));
-        const icon=ev.type==="income"?"💰":ev.type==="grace"?"⏳":"💳";
-        return `<div class="timeline-row">
-          <div class="timeline-icon">${icon}</div>
-          <div class="timeline-body"><b>${esc(ev.title)}</b><div class="small muted">${ev.date.toLocaleDateString("ru-RU")} · через ${days} дн.</div></div>
-          <div class="timeline-amount">${money(ev.amount)}</div>
-        </div>`;
-      }).join("")}
-    </div>
-
-    ${activeGraceCards().map(card=>{
-      const dl=graceDeadline(card);
-      const days=daysUntilDate(dl);
-      const pays=Math.max(1,salaryPaymentsUntil(dl));
-      const per=graceReserveNeededPerPayment(card);
-      const level=days<=14?"danger":days<=45?"warning":"good";
-      return `<div class="card grace-card ${level}">
-        <div class="row"><div><div class="eyebrow">ЛЬГОТНЫЙ ПЕРИОД</div><b>${esc(card.name)}</b></div><div class="grace-days">${days} дн.</div></div>
-        <div class="grace-amount">${money(card.balance)}</div>
-        <div class="muted">0% до ${dl.toLocaleDateString("ru-RU")}</div>
-        <div class="grace-grid">
-          <div><span>Осталось выплат</span><b>${pays}</b></div>
-          <div><span>Нужно с каждой выплаты</span><b>${money(per)}</b></div>
-          <div><span>После льготы</span><b>${Number(card.post_grace_apr||0).toFixed(1)}%</b></div>
-        </div>
-        <div class="small muted" style="margin-top:9px">Пока эта сумма не зарезервирована, обычное досрочное погашение других кредитов не должно быть приоритетом.</div>
-      </div>`;
-    }).join("")}
-
-    ${state.debts.filter(d=>d.type==="Кредит"&&Number(d.balance)>0).map(d=>{
-      const next=nextScheduledPaymentDate(d);
-      const end=scheduledEndDate(d);
-      return `<div class="card loan-card">
-        <div class="eyebrow">ОСНОВНОЙ КРЕДИТ</div>
-        <div class="row"><b>${esc(d.name)}</b><b>${money(d.balance)}</b></div>
-        <div class="loan-grid">
-          <div><span>Следующий платёж</span><b>${next?next.toLocaleDateString("ru-RU"):"не указан"}</b></div>
-          <div><span>Через</span><b>${next?Math.max(0,daysBetweenNow(next))+" дн.":"—"}</b></div>
-          <div><span>Платёж</span><b>${money(d.payment)}</b></div>
-          <div><span>По графику до</span><b>${end?end.toLocaleDateString("ru-RU",{month:"short",year:"numeric"}):"не указано"}</b></div>
-        </div>
-      </div>`;
-    }).join("")}
-
-    <div class="section-title"><h2>🎯 Когда я выйду из долгов</h2></div>
-    <div class="card forecast-card" id="forecastCard"></div>
-
-    <div class="section-title"><h2>🧾 Остатки по расходам</h2></div>
-    <div class="card">${categoryCards || `<div class="muted">Добавь категории расходов в «Мои деньги».</div>`}</div>
-
-    <div class="section-title"><h2>＋ Записать расход</h2></div>
-    <div class="card">
-      <div class="form-grid">
-        <label>Категория<select id="quickExpenseCategory">${state.categories.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join("")}</select></label>
-        <label>Сумма<input id="quickExpenseAmount" type="number" min="0" step="100" value="0"></label>
-        <label class="wide">Откуда оплачено?<select id="quickExpenseSource">${sourceOptions()}</select></label>
-        <label class="wide">Комментарий<input id="quickExpenseNote" placeholder="Например: бензин"></label>
-      </div>
-      <button id="saveExpenseBtn" class="primary full">Записать расход</button>
-    </div>
-
-    <div class="section-title"><h2>🧭 Как распределять свободные деньги</h2></div>
-    <div class="card strategy-card">
-      <div class="strategy-options">
-        ${["Бережный","Сбалансированный","Ускоренный"].map(x=>`<button class="strategy-btn ${(state.strategy_mode||"Сбалансированный")===x?"active":""}" data-strategy="${x}">${x}</button>`).join("")}
-      </div>
-      <div id="strategyDescription" class="small muted"></div>
-    </div>
-
-    <div class="section-title"><h2>💰 Мне пришли деньги</h2></div>
-    <div class="chips">${chips.map(x=>`<button class="chip ${x===selectedIncomeType?"active":""}" data-income="${esc(x)}">${esc(x)}</button>`).join("")}</div>
-    <div class="card">
-      <div class="form-grid">
-        <label class="wide">Сумма<input id="incomeAmount" type="number" min="0" step="500" value="${defaultAmount}"></label>
-        <label class="wide">Куда пришли деньги?<select id="incomeAccount">${state.accounts.map(a=>`<option value="${a.id}">${esc(a.name)} · сейчас ${money(a.balance)}</option>`).join("")}</select></label>
-        ${selectedIncomeType==="Отпускные"?`<label class="wide">Сколько планируешь на отпуск<input id="vacationBudget" type="number" min="0" step="1000" value="0"></label>`:""}
-        ${selectedIncomeType==="Другое"?`<label class="wide">Что хочешь сделать<select id="otherPurpose"><option>Пока не знаю</option><option>Сохранить на цель</option><option>В подушку</option><option>В долг</option></select></label>`:""}
-      </div>
-      <div id="incomePlanBox"></div>
-      <button id="saveIncomeBtn" class="primary full" style="margin-top:10px">Записать поступление и план</button>
-    </div>
-
-    <div class="card">
-      <h2>↔️ Перенаправить деньги</h2>
-      <p class="small muted">Например: с личной карты погасить кредитку или кредит. ФинШтурман сразу уменьшит и деньги на счёте, и долг.</p>
-      <div class="form-grid">
-        <label>Откуда<select id="payFromAccount">${state.accounts.map(a=>`<option value="${a.id}">${esc(a.name)} · ${money(a.balance)}</option>`).join("")}</select></label>
-        <label>Куда<select id="payToDebt">${state.debts.filter(d=>Number(d.balance)>0).map(d=>`<option value="${d.id}">${esc(d.name)} · долг ${money(d.balance)}</option>`).join("")}</select></label>
-        <label class="wide">Сумма<input id="payDebtAmount" type="number" min="0" step="500" value="0"></label>
-      </div>
-      <button id="payDebtBtn" class="primary full">Погасить долг из своих средств</button>
-    </div>
-
-    <div class="card impulse-card">
-      <h2>🛍️ Хочу купить</h2>
-      <p class="small muted">Не запрещаю покупку — показываю её цену для твоего плана и создаю паузу, если сумма крупная.</p>
-      <div class="form-grid">
-        <label class="wide">Что хочешь купить?<input id="purchaseName" placeholder="Например: одежда"></label>
-        <label>Категория<select id="purchaseCategory">${state.categories.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join("")}</select></label>
-        <label>Стоимость<input id="purchasePrice" type="number" min="0" step="500" value="0"></label>
-        <label class="wide">Чем оплачиваешь?<select id="purchaseSource">${sourceOptions()}</select></label>
-      </div>
-      <div id="purchaseAdvice" class="notice" style="margin:10px 0">Введи сумму — я покажу последствия.</div>
-      <div id="purchaseActions" class="grid2">
-        <button id="delayPurchase">⏳ Пауза ${state.impulse_pause_hours||72} ч</button>
-        <button id="boughtPurchase">Купила</button>
-      </div>
-      <div id="purchaseConfirm" class="hidden" style="margin-top:10px">
-        <div class="notice warning">Покупка крупнее безопасного ориентира. Если решение всё ещё осознанное, можно записать её вторым нажатием.</div>
-        <button id="confirmBought" class="danger full">Да, всё равно записать покупку</button>
+      <div class="salary-mini">
+        <span>Следующая зарплата</span>
+        <b>${n.days} дн.</b>
+        <small>${n.part} · ${money(n.amount)}</small>
       </div>
     </div>
+
+    <div class="top-compact-grid">
+      <div class="card mini-calendar">${calendarMini()}</div>
+      ${debtJourneyMarkup()}
+    </div>
+
+    <div class="section-title compact-title"><h2>Что важно сейчас</h2><span>только ближайшее</span></div>
+    <div class="action-stack">
+      ${actions.map((a,i)=>`<div class="smart-action">
+        <div class="action-index ${a.tone}">${i+1}</div>
+        <div class="action-text"><b>${esc(a.title)}</b><span>${esc(a.detail)}</span><small>${esc(a.note)}</small></div>
+        <strong>${money(a.amount)}</strong>
+      </div>`).join("") || `<div class="card muted">Срочных действий нет.</div>`}
+    </div>
+
+    ${activeDebts.length?`
+      <div class="section-title compact-title"><h2>Долги</h2><span>закрытые исчезают отсюда</span></div>
+      <div class="debt-strip">
+        ${activeDebts.map(d=>{
+          const isCard=d.type==="Кредитная карта",startDebt=Math.max(Number(state.start_debt||0),totalDebt());
+          const dl=isCard?graceDeadline(d):nextScheduledPaymentDate(d);
+          return `<div class="debt-tile ${isCard?"creditcard":"loan"}">
+            <div class="row"><div><span>${isCard?"Кредитка":"Кредит"}</span><b>${esc(d.name)}</b></div>${isCard&&d.grace_enabled?`<em>0% до ${graceDeadline(d)?.toLocaleDateString("ru-RU",{day:"numeric",month:"short"})||"—"}</em>`:""}</div>
+            <div class="debt-value">${money(d.balance)}</div>
+            <div class="small muted">${isCard&&dl?`До дедлайна ${Math.max(0,daysBetweenNow(dl))} дн.`:dl?`Следующий платёж ${dl.toLocaleDateString("ru-RU")}`:""}</div>
+            <button class="quick-pay" data-quick-pay="${d.id}">Погасить</button>
+          </div>`;
+        }).join("")}
+      </div>`:""}
+
+    <div class="section-title compact-title"><h2>Расходы и платежи</h2><span>было · оплачено · осталось</span></div>
+    <div class="card progress-list">${monthCats}</div>
+
+    <details class="quick-entry card">
+      <summary>＋ Быстро добавить расход</summary>
+      <div class="quick-form">
+        <input id="quickExpenseAmount" type="number" inputmode="decimal" placeholder="Сумма">
+        <select id="quickExpenseCategory">${state.categories.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join("")}</select>
+        <button id="saveExpenseBtn" class="primary">Записать</button>
+      </div>
+      <div class="small muted">Дата — сегодня. Источник — первый личный счёт. Остальное можно изменить в «Мои деньги».</div>
+    </details>
+
+    <details class="card nearest-events">
+      <summary>Календарь ближайших событий</summary>
+      ${timelineEvents().map(ev=>`<div class="event-line">
+        <span>${ev.date.toLocaleDateString("ru-RU",{day:"numeric",month:"short"})}</span>
+        <b>${esc(ev.title)}</b>
+        <strong>${ev.type==="income"?"+":""}${money(ev.amount)}</strong>
+      </div>`).join("")}
+      ${fixedBillsOpen().slice(0,4).map(x=>`<div class="event-line">
+        <span>${x.due.toLocaleDateString("ru-RU",{day:"numeric",month:"short"})}</span>
+        <b>${esc(x.c.name)}</b><strong>${money(x.left)}</strong>
+      </div>`).join("")}
+    </details>
   `;
 
-  const forecastModes=["Бережный","Сбалансированный","Ускоренный"];
-  const forecasts=forecastModes.map(mode=>({mode,...forecastDebtPayoff(mode)}));
-  const current=forecasts.find(x=>x.mode===(state.strategy_mode||"Сбалансированный"))||forecasts[1];
-  const fc=$("#forecastCard");
-  if(fc){
-    if(totalDebt()<=0){
-      fc.innerHTML=`<div class="forecast-hero">🎉 Долгов нет</div><div class="muted">Теперь этот же денежный поток можно перенаправлять в накопления и цели.</div>`;
-    }else if(!current.ok){
-      fc.innerHTML=`<div class="notice warning"><b>Пока не могу построить реалистичный прогноз</b><br>${esc(current.warning)}</div>`;
-    }else{
-      const debtBudgetNow=Math.max(0,Number(state.salary_total||0)-monthlyLife()-periodBuffer()*2);
-      fc.innerHTML=`
-        <div class="forecast-main">
-          <div>
-            <div class="eyebrow">ТЕКУЩИЙ РЕЖИМ · ${esc(current.mode.toUpperCase())}</div>
-            <div class="forecast-date">${current.finish.toLocaleDateString("ru-RU",{month:"long",year:"numeric"})}</div>
-            <div class="muted">ориентировочно через ${humanMonths(current.months)}</div>
-          </div>
-          <div class="forecast-pill">${money(totalDebt())} → 0 ₽</div>
-        </div>
-        <div class="forecast-stats">
-          <div><span>Зарплата</span><b>${money(state.salary_total)}</b></div>
-          <div><span>Жизнь / месяц</span><b>${money(monthlyLife())}</b></div>
-          <div><span>Резерв в расчёте</span><b>${money(periodBuffer()*2)}</b></div>
-          <div><span>Прогноз процентов</span><b>${money(current.totalInterest)}</b></div>
-        </div>
-        ${(()=>{
-          const loan=state.debts.find(d=>d.type==="Кредит"&&Number(d.balance)>0);
-          if(!loan)return "";
-          const end=scheduledEndDate(loan);
-          if(!end)return "";
-          const diff=Math.round((end-current.finish)/(30.44*86400000));
-          return `<div class="notice"><b>Сравнение с графиком банка</b><br>
-            По текущему графику «${esc(loan.name)}» заканчивается примерно ${end.toLocaleDateString("ru-RU",{month:"long",year:"numeric"})}.
-            ${diff>0?`При текущем финансовом плане все долги могут закрыться примерно на <b>${diff} мес. раньше</b>.`:diff<0?`Текущий общий план выходит примерно на <b>${Math.abs(diff)} мес. позже</b> графика этого кредита из-за других обязательств.`:"Расчёт примерно совпадает с графиком."}
-          </div>`;
-        })()}
-        ${current.warning?`<div class="notice warning">${esc(current.warning)}</div>`:""}
-        <details class="forecast-details">
-          <summary>Сравнить три режима</summary>
-          <div class="scenario-list">
-            ${forecasts.map(f=>`
-              <div class="scenario ${f.mode===(state.strategy_mode||"Сбалансированный")?"active":""}">
-                <div><b>${esc(f.mode)}</b><div class="small muted">${f.ok?humanMonths(f.months):"нужно изменить бюджет"}</div></div>
-                <div class="scenario-date">${f.ok?f.finish.toLocaleDateString("ru-RU",{month:"short",year:"numeric"}):"—"}</div>
-              </div>`).join("")}
-          </div>
-          <div class="small muted" style="margin-top:10px">
-            Прогноз пересчитывается из текущих остатков долгов, ставок, зарплаты, расходов, подушки и выбранной стратегии. Это ориентир: фактические банковские проценты и даты списаний могут немного отличаться.
-          </div>
-        </details>`;
-    }
-  }
-
-  $("#saveExpenseBtn").onclick=async()=>{
+  const saveBtn=$("#saveExpenseBtn");
+  if(saveBtn)saveBtn.onclick=async()=>{
     const amount=Number($("#quickExpenseAmount").value||0);
-    if(amount<=0)return toast("Введи сумму расхода");
+    if(amount<=0)return toast("Введи сумму");
     const categoryId=$("#quickExpenseCategory").value;
     const cat=state.categories.find(c=>c.id===categoryId);
-    const sourceKey=$("#quickExpenseSource").value;
-    const applied=applyExpenseToSource(sourceKey,amount);
-    if(!applied.ok)return toast(applied.msg);
-    addHistory("Расход",-amount,$("#quickExpenseNote").value||cat?.name||"Расход",{
-      categoryId,categoryName:cat?.name||"",sourceKey,sourceName:applied.name,sourceKind:applied.kind
-    });
-    await saveState();renderToday();renderMoney();renderHistory();
-    toast(applied.kind==="credit"?"Расход записан — долг по кредитке вырос":"Расход списан из своих средств");
-  };
-
-  const strategyText={
-    "Бережный":"Около 25% действительно свободных денег — в досрочное погашение. Больше остаётся у тебя.",
-    "Сбалансированный":"Около 50% действительно свободных денег — в долг, остальное остаётся свободным.",
-    "Ускоренный":"До 75% действительно свободных денег — в долг, но жизнь, платежи и резерв всё равно защищены."
-  };
-  if($("#strategyDescription"))$("#strategyDescription").textContent=strategyText[state.strategy_mode||"Сбалансированный"];
-  $$("[data-strategy]").forEach(b=>b.onclick=async()=>{
-    state.strategy_mode=b.dataset.strategy;
-    await saveState({silent:true});
-    renderToday();renderMoney();
-  });
-
-  $$("#screen-today [data-income]").forEach(b=>b.onclick=()=>{selectedIncomeType=b.dataset.income;renderToday();});
-  const amount=$("#incomeAmount"),vac=$("#vacationBudget"),purpose=$("#otherPurpose"),box=$("#incomePlanBox");
-  function updatePlan(){
-    const v=Number(amount.value||0);if(v<=0){box.innerHTML="";return;}
-    const p=incomePlan(selectedIncomeType,v,Number(vac?.value||0),purpose?.value);
-    box.innerHTML=`<hr><h3>Я бы распределил так:</h3>${p.alloc.filter(x=>x[1]>0).map(x=>`<div class="allocation"><span>${esc(x[0])}</span><b>${money(x[1])}</b></div>`).join("")}
-      <div class="notice"><b>Почему так?</b><br>${esc(p.reason)}</div>`;
-  }
-  [amount,vac,purpose].filter(Boolean).forEach(x=>x.oninput=updatePlan);updatePlan();
-  $("#saveIncomeBtn").onclick=async()=>{
-    const v=Number(amount.value||0);if(v<=0)return toast("Введи сумму");
-    const accountId=$("#incomeAccount").value;
-    const account=state.accounts.find(a=>a.id===accountId);
-    if(!applyIncomeToAccount(accountId,v))return toast("Не найден счёт для поступления");
-    const p=incomePlan(selectedIncomeType,v,Number(vac?.value||0),purpose?.value);
-    addHistory(selectedIncomeType,v,`Деньги пришли на «${account?.name||"счёт"}». Помощник сформировал план распределения.`,{
-      allocations:p.alloc,reason:p.reason,accountId,accountName:account?.name||""
-    });
-    await saveState();renderToday();renderMoney();renderHistory();toast("Поступление добавлено на счёт");
-  };
-
-  $("#payDebtBtn").onclick=async()=>{
-    const accountId=$("#payFromAccount").value;
-    const debtId=$("#payToDebt").value;
-    const v=Number($("#payDebtAmount").value||0);
-    const r=payDebtFromAccount(accountId,debtId,v);
+    const account=state.accounts.find(a=>a.type!=="Накопления")||state.accounts[0];
+    if(!account)return toast("Сначала добавь личный счёт");
+    const r=applyExpenseToSource(`account:${account.id}`,amount);
     if(!r.ok)return toast(r.msg);
-    addHistory("Погашение долга",-r.actual,`${r.account.name} → ${r.debt.name}`,{
-      sourceName:r.account.name,debtName:r.debt.name,debtId:r.debt.id
-    });
-    await saveState();renderToday();renderMoney();renderHistory();
-    toast(`Долг уменьшен на ${money(r.actual)}`);
+    addHistory("Расход",-amount,cat?.name||"Расход",{categoryId,categoryName:cat?.name||"",sourceKey:`account:${account.id}`,sourceName:account.name,sourceKind:"account"});
+    await saveState();renderAll();toast("Записано");
   };
 
-  const price=$("#purchasePrice"),advice=$("#purchaseAdvice");
-  function purchaseAnalysis(){
-    const v=Number(price.value||0);
-    if(!v){advice.innerHTML="Введи сумму — я покажу последствия.";return {large:false};}
-    const categoryId=$("#purchaseCategory").value;
-    const cat=state.categories.find(c=>c.id===categoryId);
-    const sourceKey=$("#purchaseSource").value;
-    const source=fundingSources().find(s=>s.key===sourceKey);
-    const catBudget=Number(cat?.monthly||0)/2;
-    const catLeft=Math.max(0,catBudget-categorySpent(categoryId));
-    const large=v>Math.max(n.daily*2,catLeft*.35);
-    const t=priorityDebt();
-    let html=`<b>${large?"⚠️ Покупка крупная для текущего периода":"✓ Покупка не выглядит критичной по размеру"}</b><br>`;
-    html+=`Безопасный ориентир сегодня: ${money(n.daily)}. В категории «${esc(cat?.name||"") }» до выплаты осталось ${money(catLeft)}.`;
-    if(source?.kind==="credit") html+=`<br><b>Оплата с кредитки увеличит долг на ${money(v)}.</b>`;
-    if(source?.kind==="account") html+=`<br>После покупки на «${esc(source.ref.name)}» останется примерно ${money(Math.max(0,Number(source.ref.balance)-v))}.`;
-    if(t){
-      const extra=Math.max(1,state.salary_total-monthlyLife()-mandatoryDebt());
-      const delayDays=Math.max(1,Math.round(v/extra*30));
-      html+=`<br>Если вместо покупки направить ${money(v)} в «${esc(t.name)}», его остаток станет около ${money(Math.max(0,t.balance-v))}. По текущему темпу это примерно ${delayDays} дн. финансового прогресса.`;
-    }
-    advice.innerHTML=html;
-    return {large,categoryId,cat};
-  }
-  price.oninput=purchaseAnalysis;
-  $("#purchaseCategory").onchange=purchaseAnalysis;
-
-  $("#delayPurchase").onclick=async()=>{
-    const v=Number(price.value||0);if(!v)return toast("Введи стоимость");
-    const categoryId=$("#purchaseCategory").value,cat=state.categories.find(c=>c.id===categoryId);
-    const hours=Number(state.impulse_pause_hours||72);
-    const unlockAt=new Date(Date.now()+hours*3600000).toISOString();
-    addHistory("Отложила покупку",v,$("#purchaseName").value||"Покупка",{categoryId,categoryName:cat?.name||"",unlockAt});
-    await saveState();renderToday();renderHistory();toast(`Поставила паузу на ${hours} ч`);
-  };
-  $("#boughtPurchase").onclick=async()=>{
-    const v=Number(price.value||0);if(!v)return toast("Введи стоимость");
-    const a=purchaseAnalysis();
-    if(a.large){$("#purchaseConfirm").classList.remove("hidden");return;}
-    await recordPurchase();
-  };
-  $("#confirmBought").onclick=recordPurchase;
-
-  async function recordPurchase(){
-    const v=Number(price.value||0);if(!v)return;
-    const categoryId=$("#purchaseCategory").value,cat=state.categories.find(c=>c.id===categoryId);
-    const sourceKey=$("#purchaseSource").value;
-    const applied=applyExpenseToSource(sourceKey,v);
-    if(!applied.ok)return toast(applied.msg);
-    addHistory("Покупка",-v,$("#purchaseName").value||"Покупка",{
-      categoryId,categoryName:cat?.name||"",sourceKey,sourceName:applied.name,sourceKind:applied.kind
-    });
-    await saveState();renderToday();renderMoney();renderHistory();
-    toast(applied.kind==="credit"?"Покупка записана — долг по кредитке вырос":"Покупка списана из своих средств");
-  }
+  $$("[data-quick-pay]").forEach(btn=>btn.onclick=async()=>{
+    const d=state.debts.find(x=>x.id===btn.dataset.quickPay);
+    if(!d)return;
+    const account=state.accounts.find(a=>a.type!=="Накопления"&&Number(a.balance)>0)||state.accounts.find(a=>Number(a.balance)>0);
+    if(!account)return toast("На своих счетах нет доступных денег");
+    const raw=prompt(`Сколько погасить «${d.name}»?\\nДоступно на «${account.name}»: ${money(account.balance)}`,Math.min(Number(account.balance),Number(d.balance)).toFixed(0));
+    if(raw===null)return;
+    const amount=Number(String(raw).replace(/\s/g,"").replace(",","."));
+    const r=payDebtFromAccount(account.id,d.id,amount);
+    if(!r.ok)return toast(r.msg);
+    addHistory("Погашение долга",-r.actual,`${account.name} → ${d.name}`,{sourceName:account.name,debtName:d.name,debtId:d.id});
+    await saveState();renderAll();
+    toast(Number(d.balance)<=0?`«${d.name}» закрыт — карточка убрана с главной`:`Долг уменьшен на ${money(r.actual)}`);
+  });
 }
 
 function renderMoney(){
@@ -1013,7 +961,12 @@ function renderMoney(){
     $$("[data-root-text]").forEach(el=>state[el.dataset.rootText]=el.value);
     state.categories.forEach(c=>{
       const base=`[data-cat-id="${c.id}"]`; const el=$(base); if(!el)return;
-      c.name=$(`${base} [data-f="name"]`).value;c.monthly=Number($(`${base} [data-f="monthly"]`).value||0);c.priority=$(`${base} [data-f="priority"]`).value;
+      c.name=$(`${base} [data-f="name"]`).value;
+      c.monthly=Number($(`${base} [data-f="monthly"]`).value||0);
+      c.priority=$(`${base} [data-f="priority"]`).value;
+      const kind=$(`${base} [data-f="kind"]`),due=$(`${base} [data-f="due_day"]`);
+      c.kind=kind?kind.value:"Повседневные";
+      c.due_day=due?Number(due.value||0):0;
     });
     state.accounts.forEach(a=>{
       const base=`[data-account-id="${a.id}"]`; const el=$(base); if(!el)return;
@@ -1055,7 +1008,7 @@ function renderMoney(){
     el.addEventListener("input",scheduleAutoSave); el.addEventListener("change",scheduleAutoSave);
   });
 
-  $("#addCategory").onclick=async()=>{harvestMoneyForm();state.categories.push({id:id(),name:"Новый расход",monthly:0,priority:"Обычно"});await saveState({silent:true});renderMoney();};
+  $("#addCategory").onclick=async()=>{harvestMoneyForm();state.categories.push({id:id(),name:"Новый расход",monthly:0,priority:"Обычно",kind:"Повседневные",due_day:0});await saveState({silent:true});renderMoney();};
   $("#addAccount").onclick=async()=>{harvestMoneyForm();state.accounts.push({id:id(),name:"Новый счёт",type:"Карта",balance:0});await saveState({silent:true});renderMoney();};
   $("#addDebt").onclick=async()=>{harvestMoneyForm();state.debts.push({id:id(),name:"Новый долг",type:"Кредит",balance:0,apr:0,payment:0,due_day:25,
           grace_enabled:false,grace_end:"",post_grace_apr:0,loan_start:"",first_payment_date:"",term_months:0,payment_type:"Аннуитетный",scheduled_end:""});await saveState({silent:true});renderMoney();};
@@ -1073,7 +1026,11 @@ function renderMoney(){
   };
 }
 function categoryHtml(c){return `<div class="item" data-cat-id="${c.id}">
-  <div class="item-grid"><label>Категория<input data-f="name" value="${esc(c.name)}"></label><label>В месяц<input data-f="monthly" type="number" value="${c.monthly}"></label></div>
+  <div class="item-grid"><label>Категория<input data-f="name" value="${esc(c.name)}"></label><label>Сумма в месяц<input data-f="monthly" type="number" value="${c.monthly}"></label></div>
+  <div class="item-grid">
+    <label>Тип<select data-f="kind">${["Повседневные","Обязательный платеж"].map(x=>`<option ${x===(c.kind||"Повседневные")?"selected":""}>${x}</option>`).join("")}</select></label>
+    <label>Оплатить до числа<input data-f="due_day" type="number" min="0" max="31" value="${Number(c.due_day||0)}" placeholder="0"></label>
+  </div>
   <label>Важность<select data-f="priority">${["Обязательно","Обычно","Можно сократить"].map(x=>`<option ${x===c.priority?"selected":""}>${x}</option>`).join("")}</select></label>
   <button class="danger full delete" data-delete-category="${c.id}">Удалить</button></div>`;}
 function accountHtml(a){return `<div class="item" data-account-id="${a.id}">
