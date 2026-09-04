@@ -438,3 +438,28 @@ body{
 @media(max-width:520px){
   .money-move-grid{grid-template-columns:1fr}
 }
+
+
+/* ===== v2.4 daily motivation ===== */
+.journey-motivation{
+  clear:both;
+  margin-top:9px;
+  padding-top:8px;
+  border-top:1px solid rgba(255,255,255,.06);
+  color:#aab5bf;
+  font-size:9px;
+  line-height:1.25;
+  font-style:italic;
+  white-space:normal;
+  overflow-wrap:anywhere;
+}
+.savings-phase .journey-motivation{
+  color:#9abcae;
+}
+@media(max-width:380px){
+  .journey-motivation{
+    font-size:8px;
+    margin-top:7px;
+    padding-top:6px;
+  }
+}

@@ -767,6 +767,43 @@ function calendarMini(){
   <div class="cal-week"><i>Пн</i><i>Вт</i><i>Ср</i><i>Чт</i><i>Пт</i><i>Сб</i><i>Вс</i></div>
   <div class="cal-grid">${cells}</div>`;
 }
+
+function dailyFreedomMessage(isDebtPhase=true){
+  const debtMessages=[
+    "Ещё один шаг к нулю.",
+    "Долг уменьшается — ты ближе.",
+    "Главное — продолжать.",
+    "Каждый платёж работает на тебя.",
+    "Сегодня достаточно одного шага.",
+    "Минус долг — плюс свобода.",
+    "Ты уже ближе, чем вчера.",
+    "Маленькие шаги дают результат.",
+    "Спокойно. План работает.",
+    "Каждый рубль приближает свободу.",
+    "Не спеши — двигайся стабильно.",
+    "Ты уменьшаешь долг каждый месяц.",
+    "Финиш становится ближе.",
+    "Сегодня — ещё немного вперёд."
+  ];
+  const savingsMessages=[
+    "Теперь деньги работают на тебя.",
+    "Подушка растёт — свободы больше.",
+    "Копишь не деньги, а спокойствие.",
+    "Каждый взнос укрепляет запас.",
+    "Теперь цель — рост, не долг.",
+    "Накопления растут шаг за шагом.",
+    "Финансовый запас уже строится.",
+    "Свобода теперь только растёт.",
+    "Каждый рубль остаётся у тебя.",
+    "Ты строишь запас на будущее."
+  ];
+
+  const d=new Date();
+  const key=d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+  const arr=isDebtPhase?debtMessages:savingsMessages;
+  return arr[key % arr.length];
+}
+
 function debtJourneyMarkup(){
   const debt=totalDebt();
   const start=Math.max(Number(state.start_debt||0),debt,1);
@@ -781,6 +818,7 @@ function debtJourneyMarkup(){
       <div class="journey-bar"><i style="width:${p}%"></i></div>
       <div class="row small"><span>Цель подушки</span><b>${money(state.reserve_target)}</b></div>
       <div class="journey-next">Теперь свободные деньги направляются в накопления и цели.</div>
+      <div class="journey-motivation">“${esc(dailyFreedomMessage(false))}”</div>
     </div>`;
   }
   const paid=Math.max(0,start-debt),p=Math.max(0,Math.min(100,paid/start*100));
@@ -796,6 +834,7 @@ function debtJourneyMarkup(){
         <span>Прогноз <b>${f.ok?f.finish.toLocaleDateString("ru-RU",{month:"long",year:"numeric"}):"уточни данные"}</b></span>
       </div>
     </div>
+    <div class="journey-motivation">“${esc(dailyFreedomMessage(true))}”</div>
   </div>`;
 }
 
