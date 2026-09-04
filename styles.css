@@ -239,3 +239,64 @@ body{
   .smart-action{padding:10px}.action-text span{max-width:190px}
   .progress-bottom span:first-child{display:none}
 }
+
+
+/* ===== v2.1 compact fixes ===== */
+.journey-card{min-width:0}
+.journey-main{display:flex;align-items:center;gap:10px;min-width:0}
+.journey-ring{float:none;flex:0 0 auto;margin:0}
+.journey-copy{flex:1;min-width:0}
+.journey-copy span{display:grid;grid-template-columns:auto 1fr;gap:5px;align-items:baseline}
+.journey-copy b{justify-self:end;max-width:100%;white-space:normal;text-align:right;overflow-wrap:anywhere}
+.journey-title{white-space:normal;overflow-wrap:anywhere}
+
+.cal-day{
+  appearance:none;border:0;color:inherit;background:transparent;padding:0;
+  font:inherit;cursor:pointer;
+}
+.cal-day.today{background:rgba(161,92,255,.30)}
+.cal-day:active{transform:scale(.96)}
+
+.quick-form{grid-template-columns:minmax(85px,.8fr) minmax(120px,1.4fr) auto;align-items:end}
+.quick-field{display:block;min-width:0}
+.quick-field span{display:block;font-size:8px;color:var(--muted);margin:0 0 4px 2px}
+.quick-field input,.quick-field select{width:100%;max-width:100%;min-width:0}
+.quick-save{height:38px;white-space:nowrap}
+
+.calendar-modal{position:fixed;inset:0;display:none;z-index:9999;align-items:flex-end;justify-content:center}
+.calendar-modal.open{display:flex}
+.calendar-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.62);backdrop-filter:blur(3px)}
+.calendar-sheet{
+  position:relative;z-index:1;width:min(520px,100%);max-height:78vh;overflow:auto;
+  background:linear-gradient(180deg,#101820,#0b1117);border:1px solid var(--line);
+  border-radius:24px 24px 0 0;padding:10px 14px 18px;box-shadow:0 -18px 50px rgba(0,0,0,.45)
+}
+.sheet-handle{width:44px;height:4px;border-radius:99px;background:#34404d;margin:0 auto 12px}
+.calendar-sheet h3{margin:3px 0 0;font-size:20px}
+.sheet-close{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:#121c26;color:var(--text);font-size:22px}
+.calendar-event-list{display:grid;gap:7px;margin:14px 0}
+.calendar-event-edit{
+  width:100%;display:grid;grid-template-columns:10px 1fr auto;gap:9px;align-items:center;text-align:left;
+  padding:12px;border:1px solid var(--line);background:#0d151d;color:var(--text);border-radius:14px
+}
+.calendar-event-edit div{min-width:0}.calendar-event-edit b,.calendar-event-edit small{display:block}
+.calendar-event-edit b{font-size:12px}.calendar-event-edit small{font-size:9px;color:var(--muted)}
+.calendar-event-edit strong{font-size:12px;white-space:nowrap}
+.event-dot{width:7px;height:7px;border-radius:50%}.event-dot.income{background:#61d39a}.event-dot.bill{background:#ff8e54}.event-dot.debt{background:#a15cff}.event-dot.grace{background:#ff5f91}
+.empty-day{padding:18px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:14px}
+
+@media(max-width:560px){
+  .top-compact-grid{grid-template-columns:1fr 1fr}
+  .journey-card{padding:10px}
+  .journey-title{font-size:14px;margin-bottom:8px}
+  .journey-ring{width:52px;height:52px;border-width:6px}
+  .journey-copy{font-size:8px;gap:2px}
+  .journey-copy span{grid-template-columns:44px 1fr}
+  .quick-form{grid-template-columns:1fr 1.35fr;gap:7px}
+  .quick-save{grid-column:1/-1;width:100%}
+}
+@media(max-width:380px){
+  .top-compact-grid{grid-template-columns:1fr}
+  .quick-form{grid-template-columns:1fr}
+  .quick-save{grid-column:auto}
+}

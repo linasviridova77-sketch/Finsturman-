@@ -761,9 +761,9 @@ function calendarMini(){
     if(billDays.has(d))dots+=`<i class="dot bill"></i>`;
     if(debtDays.has(d))dots+=`<i class="dot debt"></i>`;
     if(graceDays.has(d))dots+=`<i class="dot grace"></i>`;
-    cells+=`<span class="cal-day ${d===now.getDate()?"today":""}"><b>${d}</b><em>${dots}</em></span>`;
+    cells+=`<button class="cal-day ${d===now.getDate()?"today":""}" data-cal-day="${d}" aria-label="Открыть ${d} число"><b>${d}</b><em>${dots}</em></button>`;
   }
-  return `<div class="cal-head"><b>${now.toLocaleDateString("ru-RU",{month:"long",year:"numeric"})}</b><span>● зарплата &nbsp; ● платежи</span></div>
+  return `<div class="cal-head"><b>${now.toLocaleDateString("ru-RU",{month:"long",year:"numeric"})}</b><span>нажми на дату</span></div>
   <div class="cal-week"><i>Пн</i><i>Вт</i><i>Ср</i><i>Чт</i><i>Пт</i><i>Сб</i><i>Вс</i></div>
   <div class="cal-grid">${cells}</div>`;
 }
@@ -776,7 +776,7 @@ function debtJourneyMarkup(){
     return `<div class="journey-card savings-phase">
       <div class="eyebrow">НОВЫЙ ЭТАП</div>
       <div class="journey-title">Долги закрыты ✓</div>
-      <div class="journey-start">Начинали с долга ${money(start)} — эта цифра остаётся в истории пути.</div>
+      <div class="journey-start">Было долгов: <b>${money(start)}</b></div>
       <div class="journey-number">${money(saved)} <span>накоплено</span></div>
       <div class="journey-bar"><i style="width:${p}%"></i></div>
       <div class="row small"><span>Цель подушки</span><b>${money(state.reserve_target)}</b></div>
@@ -788,14 +788,103 @@ function debtJourneyMarkup(){
   return `<div class="journey-card">
     <div class="eyebrow">МОЙ ПУТЬ К СВОБОДЕ</div>
     <div class="journey-title">${money(start)} → 0 ₽</div>
-    <div class="journey-ring"><span>${p.toFixed(0)}%</span></div>
-    <div class="journey-copy">
-      <span>Было <b>${money(start)}</b></span>
-      <span>Погашено <b>${money(paid)}</b></span>
-      <span>Осталось <b>${money(debt)}</b></span>
-      <span>Прогноз <b>${f.ok?f.finish.toLocaleDateString("ru-RU",{month:"long",year:"numeric"}):"уточни данные"}</b></span>
+    <div class="journey-main">
+      <div class="journey-ring"><span>${p.toFixed(0)}%</span></div>
+      <div class="journey-copy">
+        <span>Было <b>${money(start)}</b></span>
+        <span>Осталось <b>${money(debt)}</b></span>
+        <span>Прогноз <b>${f.ok?f.finish.toLocaleDateString("ru-RU",{month:"long",year:"numeric"}):"уточни данные"}</b></span>
+      </div>
     </div>
   </div>`;
+}
+
+
+function calendarDayEvents(day){
+  const now=new Date(), y=now.getFullYear(), m=now.getMonth();
+  const out=[];
+
+  if(Number(state.salary_day_1)===day) out.push({kind:"salary1",title:"1-я часть зарплаты",amount:Number(state.salary_part_1||0),type:"income"});
+  if(Number(state.salary_day_2)===day) out.push({kind:"salary2",title:"2-я часть зарплаты",amount:Number(state.salary_part_2||0),type:"income"});
+
+  fixedCategories().filter(c=>Number(c.due_day)===day).forEach(c=>{
+    out.push({kind:"bill",id:c.id,title:c.name,amount:Number(c.monthly||0),type:"bill"});
+  });
+
+  state.debts.filter(d=>Number(d.balance)>0 && Number(d.due_day||0)===day).forEach(d=>{
+    out.push({kind:"debt",id:d.id,title:d.name,amount:Number(d.payment||d.min_payment||0),type:"debt"});
+  });
+
+  state.debts.filter(d=>Number(d.balance)>0&&d.grace_enabled&&d.grace_end).forEach(d=>{
+    const gd=parseDateOnly(d.grace_end);
+    if(gd && gd.getFullYear()===y && gd.getMonth()===m && gd.getDate()===day){
+      out.push({kind:"grace",id:d.id,title:`Конец 0% — ${d.name}`,amount:Number(d.balance||0),type:"grace"});
+    }
+  });
+  return out;
+}
+function openCalendarDay(day){
+  let modal=$("#calendarDayModal");
+  if(!modal){
+    modal=document.createElement("div");
+    modal.id="calendarDayModal";
+    modal.className="calendar-modal";
+    document.body.appendChild(modal);
+  }
+  const events=calendarDayEvents(day);
+  modal.innerHTML=`<div class="calendar-backdrop" data-close-cal></div>
+    <div class="calendar-sheet">
+      <div class="sheet-handle"></div>
+      <div class="row"><div><div class="eyebrow">КАЛЕНДАРЬ</div><h3>${day} ${new Date().toLocaleDateString("ru-RU",{month:"long"})}</h3></div><button class="sheet-close" data-close-cal>×</button></div>
+      <div class="calendar-event-list">
+        ${events.length?events.map(ev=>`<button class="calendar-event-edit" data-event-kind="${ev.kind}" data-event-id="${ev.id||""}">
+          <span class="event-dot ${ev.type}"></span>
+          <div><b>${esc(ev.title)}</b><small>Нажми, чтобы изменить</small></div>
+          <strong>${ev.type==="income"?"+":""}${money(ev.amount)}</strong>
+        </button>`).join(""):`<div class="empty-day">На эту дату событий пока нет.</div>`}
+      </div>
+      <button class="secondary full" id="addCalendarBillBtn">＋ Добавить обязательный платёж</button>
+    </div>`;
+  modal.classList.add("open");
+
+  $$("[data-close-cal]").forEach(x=>x.onclick=()=>modal.classList.remove("open"));
+  $("#addCalendarBillBtn").onclick=async()=>{
+    const name=prompt("Название платежа","Новый платёж"); if(!name)return;
+    const amount=Number(prompt("Сумма","0")||0);
+    state.categories.push({id:id(),name,monthly:amount,priority:"Обязательно",kind:"Обязательный платеж",due_day:Number(day)});
+    await saveState(); renderAll(); openCalendarDay(day);
+  };
+  $$(".calendar-event-edit").forEach(btn=>btn.onclick=()=>editCalendarEvent(btn.dataset.eventKind,btn.dataset.eventId,day));
+}
+async function editCalendarEvent(kind,eventId,day){
+  if(kind==="salary1"||kind==="salary2"){
+    const part=kind==="salary1"?"1":"2";
+    const amountKey=part==="1"?"salary_part_1":"salary_part_2";
+    const dayKey=part==="1"?"salary_day_1":"salary_day_2";
+    const amount=prompt(`Сумма ${part}-й части зарплаты`,Number(state[amountKey]||0));
+    if(amount===null)return;
+    const d=prompt("День месяца",Number(state[dayKey]||day));
+    if(d===null)return;
+    state[amountKey]=Number(amount||0); state[dayKey]=Number(d||day);
+  }else if(kind==="bill"){
+    const c=state.categories.find(x=>x.id===eventId); if(!c)return;
+    const amount=prompt(`Сумма «${c.name}»`,Number(c.monthly||0)); if(amount===null)return;
+    const d=prompt("Оплатить до числа",Number(c.due_day||day)); if(d===null)return;
+    c.monthly=Number(amount||0); c.due_day=Number(d||day); c.kind="Обязательный платеж";
+  }else if(kind==="debt"){
+    const dObj=state.debts.find(x=>x.id===eventId); if(!dObj)return;
+    const p=prompt(`Платёж по «${dObj.name}»`,Number(dObj.payment||dObj.min_payment||0)); if(p===null)return;
+    const dd=prompt("День платежа",Number(dObj.due_day||day)); if(dd===null)return;
+    if(dObj.type==="Кредит") dObj.payment=Number(p||0); else dObj.min_payment=Number(p||0);
+    dObj.due_day=Number(dd||day);
+  }else if(kind==="grace"){
+    const dObj=state.debts.find(x=>x.id===eventId); if(!dObj)return;
+    const date=prompt("Дата окончания 0% (ГГГГ-ММ-ДД)",dObj.grace_end||""); if(date===null)return;
+    dObj.grace_end=date;
+  }
+  await saveState(); renderAll();
+  const modal=$("#calendarDayModal"); if(modal)modal.classList.remove("open");
+  toast("Изменения сохранены");
 }
 
 function renderToday(){
@@ -861,9 +950,9 @@ function renderToday(){
     <details class="quick-entry card">
       <summary>＋ Быстро добавить расход</summary>
       <div class="quick-form">
-        <input id="quickExpenseAmount" type="number" inputmode="decimal" placeholder="Сумма">
-        <select id="quickExpenseCategory">${state.categories.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join("")}</select>
-        <button id="saveExpenseBtn" class="primary">Записать</button>
+        <label class="quick-field"><span>Сумма</span><input id="quickExpenseAmount" type="number" inputmode="decimal" placeholder="0 ₽"></label>
+        <label class="quick-field"><span>Категория</span><select id="quickExpenseCategory">${state.categories.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join("")}</select></label>
+        <button id="saveExpenseBtn" class="primary quick-save">Записать</button>
       </div>
       <div class="small muted">Дата — сегодня. Источник — первый личный счёт. Остальное можно изменить в «Мои деньги».</div>
     </details>
@@ -881,6 +970,8 @@ function renderToday(){
       </div>`).join("")}
     </details>
   `;
+
+  $$("[data-cal-day]").forEach(btn=>btn.onclick=()=>openCalendarDay(Number(btn.dataset.calDay)));
 
   const saveBtn=$("#saveExpenseBtn");
   if(saveBtn)saveBtn.onclick=async()=>{
